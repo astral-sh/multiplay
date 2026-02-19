@@ -681,6 +681,38 @@ textarea {
   font-style: italic;
 }
 
+.result-card.dragging {
+  opacity: 0.4;
+}
+
+.result-card.drag-over-above {
+  box-shadow: 0 -3px 0 0 var(--accent);
+}
+
+.result-card.drag-over-below {
+  box-shadow: 0 3px 0 0 var(--accent);
+}
+
+.result-header {
+  cursor: grab;
+}
+
+.result-header:active {
+  cursor: grabbing;
+}
+
+.drag-grip {
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  opacity: 0.45;
+  user-select: none;
+}
+
+.result-card:hover .drag-grip {
+  opacity: 0.8;
+}
+
 .bad {
   color: var(--error);
   font-weight: 600;

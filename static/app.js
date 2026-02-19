@@ -15,6 +15,8 @@ const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycros
 let toolOrder = DEFAULT_TOOL_ORDER.slice();
 const RUFF_TY_TOOL = "ty_ruff";
 
+let draggedTool = null;
+
 const state = {
   files: [],
   dependencies: [],
@@ -941,6 +943,8 @@ function renderResults(resultByTool) {
 
     const card = document.createElement("section");
     card.className = "result-card";
+    card.draggable = true;
+    card.dataset.tool = tool;
     if (!enabled) {
       card.classList.add("tool-disabled");
     }
@@ -948,8 +952,66 @@ function renderResults(resultByTool) {
       card.classList.add("collapsed");
     }
 
+    card.addEventListener("dragstart", (event) => {
+      draggedTool = tool;
+      card.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+    });
+
+    card.addEventListener("dragend", () => {
+      draggedTool = null;
+      card.classList.remove("dragging");
+      resultsEl.querySelectorAll(".result-card").forEach((c) => {
+        c.classList.remove("drag-over-above", "drag-over-below");
+      });
+    });
+
+    card.addEventListener("dragover", (event) => {
+      if (draggedTool === null || draggedTool === tool) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const rect = card.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      const above = event.clientY < midY;
+      card.classList.toggle("drag-over-above", above);
+      card.classList.toggle("drag-over-below", !above);
+    });
+
+    card.addEventListener("dragleave", () => {
+      card.classList.remove("drag-over-above", "drag-over-below");
+    });
+
+    card.addEventListener("drop", (event) => {
+      event.preventDefault();
+      card.classList.remove("drag-over-above", "drag-over-below");
+      if (draggedTool === null || draggedTool === tool) {
+        return;
+      }
+      const fromIndex = toolOrder.indexOf(draggedTool);
+      if (fromIndex < 0) {
+        return;
+      }
+      toolOrder.splice(fromIndex, 1);
+      let toIndex = toolOrder.indexOf(tool);
+      const rect = card.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (event.clientY >= midY) {
+        toIndex += 1;
+      }
+      toolOrder.splice(toIndex, 0, draggedTool);
+      draggedTool = null;
+      renderResults(state.lastResults);
+    });
+
     const header = document.createElement("div");
     header.className = "result-header";
+
+    const grip = document.createElement("span");
+    grip.className = "drag-grip";
+    grip.textContent = "\u2261";
+    header.appendChild(grip);
 
     const titleWrap = document.createElement("div");
     titleWrap.className = "result-title-wrap";
@@ -1071,7 +1133,18 @@ async function analyze() {
       state.toolVersions = { ...state.toolVersions, ...body.tool_versions };
     }
     if (Array.isArray(body.tool_order) && body.tool_order.length > 0) {
-      toolOrder = normalizeToolList(body.tool_order);
+      const serverOrder = normalizeToolList(body.tool_order);
+      const serverSet = new Set(serverOrder);
+      // Keep local ordering, drop tools the server no longer reports
+      const merged = toolOrder.filter((t) => serverSet.has(t));
+      const mergedSet = new Set(merged);
+      // Append any new tools from the server at the end
+      for (const t of serverOrder) {
+        if (!mergedSet.has(t)) {
+          merged.push(t);
+        }
+      }
+      toolOrder = merged;
     }
     if (typeof body.ruff_repo_path === "string") {
       state.ruffRepoPath = normalizeRuffRepoPath(body.ruff_repo_path);
