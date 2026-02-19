@@ -34,6 +34,7 @@ DEFAULT_FILES = [
     },
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
 ]
+DEFAULT_DEPENDENCIES: list[str] = []
 
 
 @dataclass(frozen=True)
@@ -88,14 +89,23 @@ def _safe_relative_path(raw_name: str) -> Path:
     return rel
 
 
-def _reset_project_dir(project_dir: Path) -> None:
-    if project_dir.exists():
-        shutil.rmtree(project_dir)
-    project_dir.mkdir(parents=True, exist_ok=True)
+def _reset_project_dir(project_dir: Path, *, keep_venv: bool) -> None:
+    if not project_dir.exists():
+        project_dir.mkdir(parents=True, exist_ok=True)
+        return
+
+    for child in project_dir.iterdir():
+        # Keep .venv across analyses to avoid reinstalling everything on each edit.
+        if keep_venv and child.name == ".venv":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
-def _write_files_to_project(project_dir: Path, files: list[dict[str, Any]]) -> None:
-    _reset_project_dir(project_dir)
+def _write_files_to_project(project_dir: Path, files: list[dict[str, Any]], *, keep_venv: bool) -> None:
+    _reset_project_dir(project_dir, keep_venv=keep_venv)
     seen: set[Path] = set()
 
     for entry in files:
@@ -114,14 +124,151 @@ def _write_files_to_project(project_dir: Path, files: list[dict[str, Any]]) -> N
         destination.write_text(content, encoding="utf-8")
 
 
-def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int = 120) -> dict[str, Any]:
-    started = time.perf_counter()
+def _command_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("FORCE_COLOR", "1")
     env.setdefault("CLICOLOR_FORCE", "1")
     env.setdefault("PY_COLORS", "1")
     env.pop("NO_COLOR", None)
+    return env
+
+
+def _normalize_dependencies(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+
+    candidates: list[str]
+    if isinstance(raw, str):
+        candidates = re.split(r"[\n,]", raw)
+    elif isinstance(raw, list):
+        candidates = []
+        for item in raw:
+            if not isinstance(item, str):
+                raise ValueError("Dependencies list must contain only strings")
+            candidates.append(item)
+    else:
+        raise ValueError("Dependencies must be a list of strings or a comma/newline separated string")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for dep in candidates:
+        value = dep.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _ensure_minimal_pyproject(project_dir: Path) -> None:
+    pyproject = project_dir / "pyproject.toml"
+    if pyproject.exists():
+        return
+    pyproject.write_text(
+        (
+            "[project]\n"
+            "name = \"multifile-editor-temp\"\n"
+            "version = \"0.0.0\"\n"
+            "requires-python = \">=3.10\"\n"
+            "dependencies = []\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def _venv_python_path(project_dir: Path) -> Path | None:
+    candidates = [
+        project_dir / ".venv" / "bin" / "python",
+        project_dir / ".venv" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _run_uv_add_dependencies(project_dir: Path, dependencies: list[str], timeout_seconds: int = 300) -> dict[str, Any]:
+    if not dependencies:
+        return {
+            "ran": False,
+            "command": "",
+            "returncode": 0,
+            "duration_ms": 0,
+            "output": "",
+            "dependencies": [],
+        }
+
+    _ensure_minimal_pyproject(project_dir)
+    command = ["uv", "add", *dependencies]
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=_command_env(),
+            check=False,
+        )
+        output = (completed.stdout or "") + (completed.stderr or "")
+        returncode = completed.returncode
+    except FileNotFoundError as exc:
+        output = f"Command not found: {exc}"
+        returncode = -1
+    except subprocess.TimeoutExpired:
+        output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
+        returncode = -2
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return {
+        "ran": True,
+        "command": " ".join(command),
+        "returncode": returncode,
+        "duration_ms": duration_ms,
+        "output": output,
+        "dependencies": dependencies,
+    }
+
+
+def _insert_flag_before_target(command: list[str], flag: str, value: str) -> list[str]:
+    if command and command[-1] == ".":
+        return [*command[:-1], flag, value, command[-1]]
+    return [*command, flag, value]
+
+
+def _command_for_tool(spec: ToolSpec, venv_python: Path | None) -> list[str]:
+    command = list(spec.command)
+    if venv_python is None:
+        return command
+
+    if spec.name == "mypy":
+        return _insert_flag_before_target(command, "--python-executable", str(venv_python))
+
+    if spec.name == "pyright":
+        return _insert_flag_before_target(command, "--pythonpath", str(venv_python))
+
+    if spec.name == "pyrefly":
+        return _insert_flag_before_target(command, "--python-interpreter-path", str(venv_python))
+
+    if spec.name == "ty":
+        return _insert_flag_before_target(command, "--python", str(venv_python))
+
+    return command
+
+
+def _run_command(
+    name: str,
+    command: list[str],
+    cwd: Path,
+    timeout_seconds: int = 120,
+    env_overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    env = _command_env()
+    if env_overrides:
+        env.update(env_overrides)
 
     try:
         completed = subprocess.run(
@@ -170,12 +317,7 @@ def _extract_version(output: str) -> str:
 
 def _detect_tool_versions(cwd: Path, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
     version_results: dict[str, dict[str, Any]] = {}
-    env = os.environ.copy()
-    env.setdefault("TERM", "xterm-256color")
-    env.setdefault("FORCE_COLOR", "1")
-    env.setdefault("CLICOLOR_FORCE", "1")
-    env.setdefault("PY_COLORS", "1")
-    env.pop("NO_COLOR", None)
+    env = _command_env()
 
     for spec in TOOL_SPECS:
         started = time.perf_counter()
@@ -307,15 +449,30 @@ def _relativize_path(path_text: str, cwd: Path) -> str:
     return path.as_posix()
 
 
-def _run_all_tools(project_dir: Path) -> dict[str, dict[str, Any]]:
+def _run_all_tools(project_dir: Path, venv_python: Path | None = None) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
+    env_overrides: dict[str, str] | None = None
+    if venv_python is not None:
+        venv_dir = venv_python.parent.parent
+        venv_bin = venv_python.parent
+        env_overrides = {
+            "VIRTUAL_ENV": str(venv_dir),
+            "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+        }
+
     for spec in TOOL_SPECS:
+        command = _command_for_tool(spec, venv_python)
         try:
-            results[spec.name] = _run_command(spec.name, spec.command, project_dir)
+            results[spec.name] = _run_command(
+                spec.name,
+                command,
+                project_dir,
+                env_overrides=env_overrides,
+            )
         except Exception as exc:  # pragma: no cover
             results[spec.name] = {
                 "tool": spec.name,
-                "command": " ".join(spec.command),
+                "command": " ".join(command),
                 "returncode": -3,
                 "duration_ms": 0,
                 "output": f"Internal error: {exc}",
@@ -327,7 +484,11 @@ def _prime_tool_installs() -> tuple[dict[str, dict[str, Any]], dict[str, dict[st
     """Warm uvx tool installs and collect tool versions."""
     prime_dir = Path(tempfile.mkdtemp(prefix="multifile-editor-prime-"))
     try:
-        _write_files_to_project(prime_dir, [{"name": "main.py", "content": "x: int = 1\n"}])
+        _write_files_to_project(
+            prime_dir,
+            [{"name": "main.py", "content": "x: int = 1\n"}],
+            keep_venv=False,
+        )
         prime_results = _run_all_tools(prime_dir)
         version_results = _detect_tool_versions(prime_dir)
         return prime_results, version_results
@@ -387,6 +548,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "initial_files": DEFAULT_FILES,
+                    "initial_dependencies": DEFAULT_DEPENDENCIES,
                     "tool_order": [spec.name for spec in TOOL_SPECS],
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
@@ -413,10 +575,28 @@ class AppHandler(BaseHTTPRequestHandler):
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
+            dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
 
             with STATE_LOCK:
-                _write_files_to_project(PROJECT_DIR, files)
-                results = _run_all_tools(PROJECT_DIR)
+                _write_files_to_project(PROJECT_DIR, files, keep_venv=bool(dependencies))
+                dependency_install = _run_uv_add_dependencies(PROJECT_DIR, dependencies)
+                if dependency_install["returncode"] != 0:
+                    _json_response(
+                        self,
+                        HTTPStatus.BAD_REQUEST,
+                        {
+                            "error": "Dependency install failed",
+                            "error_type": "dependency_install_failed",
+                            "dependency_install": dependency_install,
+                            "dependencies": dependencies,
+                            "tool_versions": dict(TOOL_VERSIONS),
+                            "temp_dir": str(PROJECT_DIR),
+                        },
+                    )
+                    return
+
+                venv_python = _venv_python_path(PROJECT_DIR) if dependencies else None
+                results = _run_all_tools(PROJECT_DIR, venv_python)
 
             _json_response(
                 self,
@@ -424,6 +604,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 {
                     "results": results,
                     "tool_versions": dict(TOOL_VERSIONS),
+                    "dependencies": dependencies,
+                    "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
                 },
             )

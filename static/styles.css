@@ -63,6 +63,91 @@ h1 {
   font-size: 0.95rem;
 }
 
+.deps-row {
+  margin: 0 0 8px;
+  display: grid;
+  grid-template-columns: auto minmax(260px, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.deps-label {
+  font-size: 0.88rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.deps-input {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.9rem;
+  resize: vertical;
+}
+
+.deps-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(13, 122, 111, 0.18);
+}
+
+.deps-note {
+  margin-bottom: 6px;
+}
+
+.deps-note code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+
+.dep-error {
+  margin: 0 0 8px;
+  border: 1px solid #e6b8b5;
+  background: #fff3f2;
+  color: #7a271f;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.dep-error.hidden {
+  display: none;
+}
+
+.dep-error-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.dep-error-meta {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: #8a332a;
+}
+
+.dep-error code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.dep-error pre {
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #efd2cf;
+  background: #fff;
+  color: #3b2020;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .tabs-wrap {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -128,7 +213,8 @@ h1 {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -334,5 +420,10 @@ input {
 @media (max-width: 980px) {
   #tabs {
     gap: 6px;
+  }
+
+  .deps-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }

@@ -16,6 +16,7 @@ let toolOrder = DEFAULT_TOOL_ORDER.slice();
 
 const state = {
   files: [],
+  dependencies: [],
   activeIndex: 0,
   renamingIndex: -1,
   debounceMs: 500,
@@ -26,11 +27,13 @@ const state = {
 };
 
 const tabsEl = document.getElementById("tabs");
+const depsInputEl = document.getElementById("dependencies");
 const highlightEl = document.getElementById("highlight");
 const editorEl = document.getElementById("editor");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const tempDirEl = document.getElementById("temp-dir");
+const depErrorEl = document.getElementById("dep-error");
 
 const PY_TOKEN_RE =
   /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b|\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\b|(\b\d+(?:\.\d+)?\b)|(@[A-Za-z_]\w*)/gm;
@@ -153,6 +156,32 @@ function sanitizeAnsiInput(raw) {
   cleaned = cleaned.replace(ANSI_ISO2022_RE, "");
   cleaned = cleaned.replace(ANSI_SINGLE_ESC_RE, "");
   return cleaned;
+}
+
+function clearDependencyInstallError() {
+  depErrorEl.classList.add("hidden");
+  depErrorEl.innerHTML = "";
+}
+
+function showDependencyInstallError(info) {
+  const command = typeof info?.command === "string" && info.command ? info.command : "uv add ...";
+  const returnCode = typeof info?.returncode === "number" ? info.returncode : "?";
+  const durationMs = typeof info?.duration_ms === "number" ? info.duration_ms : "?";
+  const dependencies = Array.isArray(info?.dependencies)
+    ? info.dependencies.filter((dep) => typeof dep === "string" && dep.trim().length > 0)
+    : [];
+  const depsText = dependencies.length > 0 ? dependencies.join(", ") : "(none)";
+  const output = typeof info?.output === "string" ? info.output : "";
+
+  depErrorEl.innerHTML =
+    `<div class="dep-error-title">Dependency install failed</div>` +
+    `<p class="dep-error-meta">` +
+    `Could not run <code>${escapeHtml(command)}</code> ` +
+    `(exit ${escapeHtml(String(returnCode))}, ${escapeHtml(String(durationMs))}ms).` +
+    `</p>` +
+    `<p class="dep-error-meta">Requested: <code>${escapeHtml(depsText)}</code></p>` +
+    `<pre>${ansiToHtml(output || "(no output)")}</pre>`;
+  depErrorEl.classList.remove("hidden");
 }
 
 function applyAnsiCodes(style, params) {
@@ -619,6 +648,42 @@ function normalizeName(name) {
   return name.trim().replace(/\\/g, "/");
 }
 
+function parseDependencies(raw) {
+  if (typeof raw !== "string") {
+    return [];
+  }
+
+  const seen = new Set();
+  const deps = [];
+  for (const part of raw.split(/[\n,]/)) {
+    const value = part.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    deps.push(value);
+  }
+  return deps;
+}
+
+function dependenciesToText(dependencies) {
+  return dependencies.join(", ");
+}
+
+function updateDependenciesFromInput({ triggerAnalyze } = { triggerAnalyze: false }) {
+  const parsed = parseDependencies(depsInputEl.value);
+  const nextText = dependenciesToText(parsed);
+  const prevText = dependenciesToText(state.dependencies);
+  depsInputEl.value = nextText;
+  if (nextText === prevText) {
+    return;
+  }
+  state.dependencies = parsed;
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
 function isUniqueName(name, ignoreIndex) {
   return !state.files.some((f, idx) => idx !== ignoreIndex && f.name === name);
 }
@@ -746,6 +811,7 @@ async function analyze() {
 
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
+    dependencies: state.dependencies.slice(),
   };
 
   try {
@@ -762,18 +828,33 @@ async function analyze() {
     state.latestHandledRequest = requestId;
 
     if (!resp.ok) {
+      if (body?.error_type === "dependency_install_failed" && body?.dependency_install) {
+        showDependencyInstallError(body.dependency_install);
+        setStatus("Dependency install failed");
+        return;
+      }
+      clearDependencyInstallError();
       setStatus("Request failed: " + (body.error || resp.status));
       return;
     }
 
+    clearDependencyInstallError();
     if (body.tool_versions && typeof body.tool_versions === "object") {
       state.toolVersions = { ...state.toolVersions, ...body.tool_versions };
+    }
+    if (Array.isArray(body.dependencies)) {
+      state.dependencies = body.dependencies
+        .filter((dep) => typeof dep === "string")
+        .map((dep) => dep.trim())
+        .filter((dep) => dep.length > 0);
+      depsInputEl.value = dependenciesToText(state.dependencies);
     }
 
     renderResults(body.results || {});
     tempDirEl.textContent = "Temp directory: " + (body.temp_dir || "");
     setStatus("Last analysis: " + new Date().toLocaleTimeString());
   } catch (err) {
+    clearDependencyInstallError();
     setStatus("Error: " + err.message);
   }
 }
@@ -832,9 +913,18 @@ function bindEvents() {
   editorEl.addEventListener("scroll", () => {
     syncHighlightScroll();
   });
+
+  depsInputEl.addEventListener("change", () => {
+    updateDependenciesFromInput({ triggerAnalyze: true });
+  });
+
+  depsInputEl.addEventListener("blur", () => {
+    updateDependenciesFromInput({ triggerAnalyze: true });
+  });
 }
 
 function loadFromBootstrap(body) {
+  clearDependencyInstallError();
   const files = Array.isArray(body.initial_files) ? body.initial_files : [];
   const normalizedFiles = files
     .filter((f) => f && typeof f.name === "string" && typeof f.content === "string")
@@ -852,6 +942,16 @@ function loadFromBootstrap(body) {
   } else {
     state.toolVersions = {};
   }
+
+  if (Array.isArray(body.initial_dependencies)) {
+    state.dependencies = body.initial_dependencies
+      .filter((dep) => typeof dep === "string")
+      .map((dep) => dep.trim())
+      .filter((dep) => dep.length > 0);
+  } else {
+    state.dependencies = [];
+  }
+  depsInputEl.value = dependenciesToText(state.dependencies);
 
   if (typeof body.temp_dir === "string" && body.temp_dir) {
     tempDirEl.textContent = "Temp directory: " + body.temp_dir;
@@ -871,6 +971,8 @@ async function bootstrap() {
     loadFromBootstrap(body);
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
+    state.dependencies = [];
+    depsInputEl.value = "";
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
 
