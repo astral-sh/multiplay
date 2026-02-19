@@ -33,10 +33,10 @@ Output panes preserve ANSI terminal color codes when the tool emits them.
 
 ## Project layout
 
-- Backend server/API: `/Users/carlmeyer/projects/multiplay/app.py`
-- Frontend markup: `/Users/carlmeyer/projects/multiplay/static/index.html`
-- Frontend styles: `/Users/carlmeyer/projects/multiplay/static/styles.css`
-- Frontend behavior/highlighting: `/Users/carlmeyer/projects/multiplay/static/app.js`
+- Backend server/API: `app.py`
+- Frontend markup: `static/index.html`
+- Frontend styles: `static/styles.css`
+- Frontend behavior/highlighting: `static/app.js`
 
 ## Requirements
 

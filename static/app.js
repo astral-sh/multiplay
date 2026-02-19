@@ -17,6 +17,7 @@ let toolOrder = DEFAULT_TOOL_ORDER.slice();
 const state = {
   files: [],
   activeIndex: 0,
+  renamingIndex: -1,
   debounceMs: 500,
   debounceTimer: null,
   requestNumber: 0,
@@ -25,14 +26,11 @@ const state = {
 };
 
 const tabsEl = document.getElementById("tabs");
-const filenameEl = document.getElementById("filename");
 const highlightEl = document.getElementById("highlight");
 const editorEl = document.getElementById("editor");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const tempDirEl = document.getElementById("temp-dir");
-const addFileBtn = document.getElementById("add-file");
-const removeFileBtn = document.getElementById("remove-file");
 
 const PY_TOKEN_RE =
   /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b|\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\b|(\b\d+(?:\.\d+)?\b)|(@[A-Za-z_]\w*)/gm;
@@ -513,27 +511,108 @@ function refreshHighlight(content) {
 function renderTabs() {
   tabsEl.innerHTML = "";
   state.files.forEach((file, idx) => {
+    const item = document.createElement("div");
+    item.className = "tab-item";
+
+    if (idx === state.renamingIndex) {
+      const renameInput = document.createElement("input");
+      renameInput.className = "tab tab-rename";
+      renameInput.type = "text";
+      renameInput.value = file.name;
+      renameInput.spellcheck = false;
+      renameInput.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      renameInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finishTabRename(idx, renameInput.value, true);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          cancelTabRename();
+        }
+      });
+      renameInput.addEventListener("blur", () => {
+        finishTabRename(idx, renameInput.value, false);
+      });
+      item.appendChild(renameInput);
+      tabsEl.appendChild(item);
+      requestAnimationFrame(() => {
+        if (state.renamingIndex === idx) {
+          renameInput.focus();
+          renameInput.select();
+        }
+      });
+      return;
+    }
+
     const btn = document.createElement("button");
-    btn.className = "tab" + (idx === state.activeIndex ? " active" : "");
+    btn.className = "tab tab-file" + (idx === state.activeIndex ? " active" : "");
     btn.textContent = file.name;
     btn.type = "button";
-    btn.addEventListener("click", () => {
-      state.activeIndex = idx;
-      syncEditorFromState();
-      renderTabs();
+    btn.dataset.index = String(idx);
+    btn.addEventListener("click", (event) => {
+      if (state.renamingIndex >= 0 && state.renamingIndex !== idx) {
+        cancelTabRename();
+      }
+
+      if (event.detail === 2) {
+        startTabRename(idx);
+        return;
+      }
+
+      if (state.activeIndex !== idx) {
+        state.activeIndex = idx;
+        syncEditorFromState();
+        syncActiveTabClasses();
+      }
     });
-    tabsEl.appendChild(btn);
+    btn.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      startTabRename(idx);
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "tab-icon tab-remove";
+    removeBtn.type = "button";
+    removeBtn.title = `Remove ${file.name}`;
+    removeBtn.textContent = "×";
+    removeBtn.disabled = state.files.length <= 1;
+    removeBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeFileAtIndex(idx);
+    });
+
+    item.appendChild(btn);
+    item.appendChild(removeBtn);
+    tabsEl.appendChild(item);
+  });
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "tab-icon tab-add";
+  addBtn.type = "button";
+  addBtn.title = "Add file";
+  addBtn.textContent = "+";
+  addBtn.addEventListener("click", () => {
+    addFile();
+  });
+  tabsEl.appendChild(addBtn);
+}
+
+function syncActiveTabClasses() {
+  tabsEl.querySelectorAll("button.tab-file").forEach((node) => {
+    const index = Number.parseInt(node.dataset.index || "-1", 10);
+    node.classList.toggle("active", index === state.activeIndex);
   });
 }
 
 function syncEditorFromState() {
   const file = activeFile();
-  filenameEl.value = file ? file.name : "";
   editorEl.value = file ? file.content : "";
   editorEl.scrollTop = 0;
   editorEl.scrollLeft = 0;
   refreshHighlight(file ? file.content : "");
-  removeFileBtn.disabled = state.files.length <= 1;
 }
 
 function normalizeName(name) {
@@ -562,28 +641,66 @@ function updateActiveFileContent(content) {
   scheduleAnalyze();
 }
 
-function updateActiveFileName(name) {
-  const file = activeFile();
+function startTabRename(index) {
+  if (index < 0 || index >= state.files.length) {
+    return;
+  }
+  state.activeIndex = index;
+  state.renamingIndex = index;
+  syncEditorFromState();
+  renderTabs();
+}
+
+function cancelTabRename() {
+  if (state.renamingIndex < 0) {
+    return;
+  }
+  state.renamingIndex = -1;
+  renderTabs();
+}
+
+function finishTabRename(index, rawName, keepOpenOnError) {
+  if (state.renamingIndex !== index) {
+    return true;
+  }
+
+  const file = state.files[index];
   if (!file) {
-    return;
+    state.renamingIndex = -1;
+    renderTabs();
+    return false;
   }
 
-  const normalized = normalizeName(name);
-  if (!normalized || normalized === file.name) {
-    return;
+  const normalized = normalizeName(rawName);
+  if (!normalized) {
+    setStatus("Filename cannot be empty");
+    if (keepOpenOnError) {
+      return false;
+    }
+    state.renamingIndex = -1;
+    renderTabs();
+    return false;
   }
 
-  if (!isUniqueName(normalized, state.activeIndex)) {
+  if (!isUniqueName(normalized, index)) {
     setStatus("Duplicate filename: " + normalized);
-    filenameEl.classList.add("bad");
-    return;
+    if (keepOpenOnError) {
+      return false;
+    }
+    state.renamingIndex = -1;
+    renderTabs();
+    return false;
   }
 
-  filenameEl.classList.remove("bad");
+  const changed = normalized !== file.name;
   file.name = normalized;
+  state.renamingIndex = -1;
   renderTabs();
   refreshHighlight();
-  scheduleAnalyze();
+  if (changed) {
+    scheduleAnalyze();
+  }
+  return true;
 }
 
 function renderResults(resultByTool) {
@@ -662,6 +779,10 @@ async function analyze() {
 }
 
 function addFile() {
+  if (state.renamingIndex >= 0) {
+    cancelTabRename();
+  }
+
   let n = state.files.length + 1;
   let name = "file_" + n + ".py";
   while (!isUniqueName(name, -1)) {
@@ -676,21 +797,32 @@ function addFile() {
   scheduleAnalyze();
 }
 
-function removeFile() {
+function removeFileAtIndex(index) {
   if (state.files.length <= 1) {
     return;
   }
-  state.files.splice(state.activeIndex, 1);
-  state.activeIndex = Math.max(0, state.activeIndex - 1);
+
+  const removedActive = state.activeIndex === index;
+  state.files.splice(index, 1);
+
+  if (state.renamingIndex === index) {
+    state.renamingIndex = -1;
+  } else if (state.renamingIndex > index) {
+    state.renamingIndex -= 1;
+  }
+
+  if (removedActive) {
+    state.activeIndex = Math.max(0, index - 1);
+  } else if (state.activeIndex > index) {
+    state.activeIndex -= 1;
+  }
+
   renderTabs();
   syncEditorFromState();
   scheduleAnalyze();
 }
 
 function bindEvents() {
-  addFileBtn.addEventListener("click", addFile);
-  removeFileBtn.addEventListener("click", removeFile);
-
   editorEl.addEventListener("input", (event) => {
     const content = event.target.value;
     refreshHighlight(content);
@@ -699,14 +831,6 @@ function bindEvents() {
 
   editorEl.addEventListener("scroll", () => {
     syncHighlightScroll();
-  });
-
-  filenameEl.addEventListener("change", (event) => {
-    updateActiveFileName(event.target.value);
-  });
-
-  filenameEl.addEventListener("blur", (event) => {
-    updateActiveFileName(event.target.value);
   });
 }
 
