@@ -21,6 +21,30 @@ Then open:
 
 - [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
+On startup, the server primes `uvx` installs for all tools so the first
+`/api/analyze` call is faster, and prints detected checker versions. The UI
+also shows each detected version in the checker pane header. To skip this
+warmup:
+
+```bash
+python3 /Users/carlmeyer/projects/multiplay/app.py --skip-prime
+```
+
+We could avoid the need for this priming by using a persistent instead of
+temporary uv tool cache, but this way is more isolated. 
+
+## Configuring
+
+Because we are simply running the type checker CLIs, you can add `ty.toml`,
+`mypy.ini`, `pyrightconfig.json` etc files and they "just work".
+
+## Project layout
+
+- Backend server/API: `/Users/carlmeyer/projects/multiplay/app.py`
+- Frontend markup: `/Users/carlmeyer/projects/multiplay/static/index.html`
+- Frontend styles: `/Users/carlmeyer/projects/multiplay/static/styles.css`
+- Frontend behavior/highlighting: `/Users/carlmeyer/projects/multiplay/static/app.js`
+
 ## Requirements
 
 - Python 3.10+

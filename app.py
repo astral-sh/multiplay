@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Local web app for editing multiple files and running type checkers."""
+"""Local web app server for editing multiple files and running type checkers."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_FILES = [
@@ -37,791 +40,24 @@ DEFAULT_FILES = [
 class ToolSpec:
     name: str
     command: list[str]
+    version_command: list[str]
 
 
 TOOL_SPECS = [
-    ToolSpec("mypy", ["uvx", "mypy", "."]),
-    ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."]),
-    ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."]),
-    ToolSpec("ty", ["uvx", "ty", "check", "."]),
+    ToolSpec("mypy", ["uvx", "mypy", "."], ["uvx", "mypy", "--version"]),
+    ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."], ["uvx", "pyright", "--version"]),
+    ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."], ["uvx", "pyrefly", "--version"]),
+    ToolSpec("ty", ["uvx", "ty", "check", "."], ["uvx", "ty", "--version"]),
 ]
 
 
+APP_ROOT = Path(__file__).resolve().parent
+STATIC_DIR = APP_ROOT / "static"
 STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 UV_CACHE_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-uv-cache-"))
 UV_TOOL_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-uv-tools-"))
-
-
-INDEX_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Multi-file Typechecker Editor</title>
-  <style>
-    :root {
-      --bg: #f0efe9;
-      --panel: #fffdf8;
-      --ink: #1f2328;
-      --muted: #5a6470;
-      --accent: #0d7a6f;
-      --accent-strong: #085e56;
-      --border: #d8d3c4;
-      --error: #a22d2d;
-      --shadow: 0 10px 25px rgba(31, 35, 40, 0.08);
-      --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
-      --sans: "IBM Plex Sans", "Segoe UI", sans-serif;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: var(--sans);
-      color: var(--ink);
-      background:
-        radial-gradient(circle at 20% 15%, #d4ece8 0%, transparent 40%),
-        radial-gradient(circle at 80% 0%, #f5dfc2 0%, transparent 35%),
-        var(--bg);
-      min-height: 100vh;
-    }
-    .container {
-      max-width: 1900px;
-      margin: 24px auto;
-      padding: 0 16px 20px;
-      display: grid;
-      grid-template-rows: auto auto 1fr;
-      gap: 12px;
-    }
-    .workspace {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
-      min-width: 0;
-    }
-    .header {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: var(--shadow);
-      padding: 14px 16px;
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 1.15rem;
-      letter-spacing: 0.02em;
-    }
-    .status {
-      margin: 0;
-      color: var(--muted);
-      font-size: 0.95rem;
-    }
-    .tabs-wrap {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: var(--shadow);
-      padding: 10px;
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .tab {
-      border: 1px solid var(--border);
-      background: #fbf9f2;
-      border-radius: 999px;
-      padding: 6px 12px;
-      cursor: pointer;
-      font-size: 0.92rem;
-    }
-    .tab.active {
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
-    }
-    .controls {
-      margin-left: auto;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    button, input {
-      font: inherit;
-    }
-    .name-input {
-      width: 220px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 10px;
-      background: #fff;
-    }
-    .btn {
-      border: 1px solid var(--accent);
-      border-radius: 8px;
-      padding: 6px 10px;
-      background: #fff;
-      color: var(--accent-strong);
-      cursor: pointer;
-    }
-    .btn:hover {
-      background: #e7f3f1;
-    }
-    .editor-wrap {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-    .editor-shell {
-      position: relative;
-      height: clamp(360px, 52vh, 760px);
-      min-width: 0;
-    }
-    #highlight,
-    textarea {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      border: none;
-      outline: none;
-      padding: 14px;
-      font-family: var(--mono);
-      font-size: 0.92rem;
-      line-height: 1.45;
-      tab-size: 4;
-      overflow: auto;
-      white-space: pre;
-      word-break: normal;
-    }
-    #highlight {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      background: #fff;
-      color: #18202a;
-    }
-    textarea {
-      position: relative;
-      resize: none;
-      background: transparent;
-      color: transparent;
-      caret-color: #18202a;
-    }
-    textarea::selection {
-      background: rgba(13, 122, 111, 0.24);
-      color: transparent;
-    }
-    .py-keyword {
-      color: #7a2f83;
-      font-weight: 600;
-    }
-    .py-string {
-      color: #0f6d40;
-    }
-    .py-comment {
-      color: #6f7780;
-      font-style: italic;
-    }
-    .py-number {
-      color: #9a4500;
-    }
-    .py-builtin {
-      color: #0c5f90;
-    }
-    .py-decorator {
-      color: #8e3600;
-      font-weight: 600;
-    }
-    .toml-table {
-      color: #7a2f83;
-      font-weight: 600;
-    }
-    .toml-key {
-      color: #0c5f90;
-      font-weight: 600;
-    }
-    .toml-string {
-      color: #0f6d40;
-    }
-    .toml-comment {
-      color: #6f7780;
-      font-style: italic;
-    }
-    .toml-bool {
-      color: #8e3600;
-      font-weight: 600;
-    }
-    .toml-number {
-      color: #9a4500;
-    }
-    .json-key {
-      color: #0c5f90;
-      font-weight: 600;
-    }
-    .json-string {
-      color: #0f6d40;
-    }
-    .json-bool {
-      color: #8e3600;
-      font-weight: 600;
-    }
-    .json-null {
-      color: #7a2f83;
-      font-weight: 600;
-    }
-    .json-number {
-      color: #9a4500;
-    }
-    .json-punct {
-      color: #545d66;
-    }
-    .ini-section {
-      color: #7a2f83;
-      font-weight: 600;
-    }
-    .ini-key {
-      color: #0c5f90;
-      font-weight: 600;
-    }
-    .ini-comment {
-      color: #6f7780;
-      font-style: italic;
-    }
-    .ini-string {
-      color: #0f6d40;
-    }
-    .ini-bool {
-      color: #8e3600;
-      font-weight: 600;
-    }
-    .ini-number {
-      color: #9a4500;
-    }
-    .results {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      min-width: 0;
-    }
-    .result-card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: var(--shadow);
-      overflow: hidden;
-      min-height: 220px;
-      display: flex;
-      flex-direction: column;
-    }
-    .result-header {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      background: #f7f3ea;
-      font-size: 0.92rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .result-header .meta {
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
-    .result-card pre {
-      margin: 0;
-      padding: 12px;
-      overflow: auto;
-      font-family: var(--mono);
-      font-size: 0.82rem;
-      line-height: 1.4;
-      flex: 1;
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: #fff;
-    }
-    .bad {
-      color: var(--error);
-      font-weight: 600;
-    }
-    @media (min-width: 1650px) {
-      .workspace {
-        grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-        align-items: start;
-      }
-      .result-card {
-        min-height: 180px;
-      }
-    }
-    @media (max-width: 980px) {
-      .controls {
-        margin-left: 0;
-      }
-      .name-input {
-        width: 160px;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>Multi-file editor with live type checking</h1>
-      <p class="status" id="status">Idle</p>
-      <p class="status" id="temp-dir"></p>
-    </div>
-
-    <div class="tabs-wrap">
-      <div id="tabs"></div>
-      <div class="controls">
-        <input class="name-input" id="filename" placeholder="filename.py" />
-        <button class="btn" id="add-file">Add file</button>
-        <button class="btn" id="remove-file">Remove file</button>
-      </div>
-    </div>
-
-    <div class="workspace">
-      <div class="editor-wrap">
-        <div class="editor-shell">
-          <pre id="highlight" aria-hidden="true"></pre>
-          <textarea id="editor" spellcheck="false" wrap="off"></textarea>
-        </div>
-      </div>
-
-      <div class="results" id="results"></div>
-    </div>
-  </div>
-
-  <script>
-    const initialFiles = __INITIAL_FILES__;
-    const toolOrder = ["mypy", "pyright", "pyrefly", "ty"];
-
-    const state = {
-      files: initialFiles.slice(),
-      activeIndex: 0,
-      debounceMs: 500,
-      debounceTimer: null,
-      requestNumber: 0,
-      latestHandledRequest: 0
-    };
-
-    const tabsEl = document.getElementById("tabs");
-    const filenameEl = document.getElementById("filename");
-    const highlightEl = document.getElementById("highlight");
-    const editorEl = document.getElementById("editor");
-    const statusEl = document.getElementById("status");
-    const resultsEl = document.getElementById("results");
-    const tempDirEl = document.getElementById("temp-dir");
-    const addFileBtn = document.getElementById("add-file");
-    const removeFileBtn = document.getElementById("remove-file");
-
-    function setStatus(text) {
-      statusEl.textContent = text;
-    }
-
-    const PY_TOKEN_RE = /(#[^\\n]*)|(\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|"(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*')|\\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\\b|\\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\\b|(\\b\\d+(?:\\.\\d+)?\\b)|(@[A-Za-z_]\\w*)/gm;
-    const TOML_TOKEN_RE = /(^\\s*\\[\\[[^\\]\\n]+\\]\\])|(^\\s*\\[[^\\]\\n]+\\])|(^\\s*(?:"[^"\\n]+"|'[^'\\n]+'|[A-Za-z0-9_.-]+)\\s*(?==))|(#[^\\n]*)|(\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|"(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*')|\\b(true|false)\\b|(\\b[+-]?\\d+(?:\\.\\d+)?\\b)/gim;
-    const JSON_TOKEN_RE = /("(?:\\\\.|[^"\\\\\\n])*"\\s*(?=:))|("(?:\\\\.|[^"\\\\\\n])*")|(\\b(?:true|false)\\b)|(\\bnull\\b)|(\\b-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)|([{}\\[\\],:])/gm;
-    const INI_TOKEN_RE = /(^\\s*[;#].*$)|(^\\s*\\[[^\\]\\n]+\\])|(^\\s*[A-Za-z0-9_.-]+\\s*(?==))|("(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*')|(\\b(?:true|false|yes|no|on|off)\\b)|(\\b[+-]?\\d+(?:\\.\\d+)?\\b)/gim;
-
-    function escapeHtml(text) {
-      return text
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    }
-
-    function extensionOf(filename) {
-      const name = (filename || "").trim().toLowerCase();
-      const dot = name.lastIndexOf(".");
-      if (dot < 0) {
-        return "";
-      }
-      return name.slice(dot);
-    }
-
-    function withVisibleTrailingNewline(source, html) {
-      if (!html) {
-        return " ";
-      }
-      if (source.endsWith("\\n")) {
-        return html + " ";
-      }
-      return html;
-    }
-
-    function renderPlain(source) {
-      return withVisibleTrailingNewline(source, escapeHtml(source));
-    }
-
-    function renderPython(source) {
-      let html = "";
-      let lastIndex = 0;
-      PY_TOKEN_RE.lastIndex = 0;
-
-      for (const match of source.matchAll(PY_TOKEN_RE)) {
-        const idx = match.index || 0;
-        if (idx > lastIndex) {
-          html += escapeHtml(source.slice(lastIndex, idx));
-        }
-
-        const token = match[0];
-        let cls = "";
-        if (match[1]) {
-          cls = "py-comment";
-        } else if (match[2]) {
-          cls = "py-string";
-        } else if (match[3]) {
-          cls = "py-keyword";
-        } else if (match[4]) {
-          cls = "py-builtin";
-        } else if (match[5]) {
-          cls = "py-number";
-        } else if (match[6]) {
-          cls = "py-decorator";
-        }
-
-        const escaped = escapeHtml(token);
-        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
-        lastIndex = idx + token.length;
-      }
-
-      if (lastIndex < source.length) {
-        html += escapeHtml(source.slice(lastIndex));
-      }
-      return withVisibleTrailingNewline(source, html);
-    }
-
-    function renderToml(source) {
-      let html = "";
-      let lastIndex = 0;
-      TOML_TOKEN_RE.lastIndex = 0;
-
-      for (const match of source.matchAll(TOML_TOKEN_RE)) {
-        const idx = match.index || 0;
-        if (idx > lastIndex) {
-          html += escapeHtml(source.slice(lastIndex, idx));
-        }
-
-        const token = match[0];
-        let cls = "";
-        if (match[1] || match[2]) {
-          cls = "toml-table";
-        } else if (match[3]) {
-          cls = "toml-key";
-        } else if (match[4]) {
-          cls = "toml-comment";
-        } else if (match[5]) {
-          cls = "toml-string";
-        } else if (match[6]) {
-          cls = "toml-bool";
-        } else if (match[7]) {
-          cls = "toml-number";
-        }
-
-        const escaped = escapeHtml(token);
-        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
-        lastIndex = idx + token.length;
-      }
-
-      if (lastIndex < source.length) {
-        html += escapeHtml(source.slice(lastIndex));
-      }
-      return withVisibleTrailingNewline(source, html);
-    }
-
-    function renderJson(source) {
-      let html = "";
-      let lastIndex = 0;
-      JSON_TOKEN_RE.lastIndex = 0;
-
-      for (const match of source.matchAll(JSON_TOKEN_RE)) {
-        const idx = match.index || 0;
-        if (idx > lastIndex) {
-          html += escapeHtml(source.slice(lastIndex, idx));
-        }
-
-        const token = match[0];
-        let cls = "";
-        if (match[1]) {
-          cls = "json-key";
-        } else if (match[2]) {
-          cls = "json-string";
-        } else if (match[3]) {
-          cls = "json-bool";
-        } else if (match[4]) {
-          cls = "json-null";
-        } else if (match[5]) {
-          cls = "json-number";
-        } else if (match[6]) {
-          cls = "json-punct";
-        }
-
-        const escaped = escapeHtml(token);
-        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
-        lastIndex = idx + token.length;
-      }
-
-      if (lastIndex < source.length) {
-        html += escapeHtml(source.slice(lastIndex));
-      }
-      return withVisibleTrailingNewline(source, html);
-    }
-
-    function renderIni(source) {
-      let html = "";
-      let lastIndex = 0;
-      INI_TOKEN_RE.lastIndex = 0;
-
-      for (const match of source.matchAll(INI_TOKEN_RE)) {
-        const idx = match.index || 0;
-        if (idx > lastIndex) {
-          html += escapeHtml(source.slice(lastIndex, idx));
-        }
-
-        const token = match[0];
-        let cls = "";
-        if (match[1]) {
-          cls = "ini-comment";
-        } else if (match[2]) {
-          cls = "ini-section";
-        } else if (match[3]) {
-          cls = "ini-key";
-        } else if (match[4]) {
-          cls = "ini-string";
-        } else if (match[5]) {
-          cls = "ini-bool";
-        } else if (match[6]) {
-          cls = "ini-number";
-        }
-
-        const escaped = escapeHtml(token);
-        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
-        lastIndex = idx + token.length;
-      }
-
-      if (lastIndex < source.length) {
-        html += escapeHtml(source.slice(lastIndex));
-      }
-      return withVisibleTrailingNewline(source, html);
-    }
-
-    function renderHighlightedCode(source, filename) {
-      const ext = extensionOf(filename);
-      if (ext === ".py" || ext === ".pyi") {
-        return renderPython(source);
-      }
-      if (ext === ".toml") {
-        return renderToml(source);
-      }
-      if (ext === ".json") {
-        return renderJson(source);
-      }
-      if (ext === ".ini" || ext === ".cfg") {
-        return renderIni(source);
-      }
-      return renderPlain(source);
-    }
-
-    function syncHighlightScroll() {
-      highlightEl.scrollTop = editorEl.scrollTop;
-      highlightEl.scrollLeft = editorEl.scrollLeft;
-    }
-
-    function refreshHighlight(content) {
-      const file = activeFile();
-      const source = typeof content === "string" ? content : file ? file.content : "";
-      const filename = file ? file.name : "";
-      highlightEl.innerHTML = renderHighlightedCode(source, filename);
-      syncHighlightScroll();
-    }
-
-    function activeFile() {
-      return state.files[state.activeIndex];
-    }
-
-    function renderTabs() {
-      tabsEl.innerHTML = "";
-      state.files.forEach((file, idx) => {
-        const btn = document.createElement("button");
-        btn.className = "tab" + (idx === state.activeIndex ? " active" : "");
-        btn.textContent = file.name;
-        btn.addEventListener("click", () => {
-          state.activeIndex = idx;
-          syncEditorFromState();
-          renderTabs();
-        });
-        tabsEl.appendChild(btn);
-      });
-    }
-
-    function syncEditorFromState() {
-      const file = activeFile();
-      filenameEl.value = file ? file.name : "";
-      editorEl.value = file ? file.content : "";
-      editorEl.scrollTop = 0;
-      editorEl.scrollLeft = 0;
-      refreshHighlight(file ? file.content : "");
-      removeFileBtn.disabled = state.files.length <= 1;
-    }
-
-    function normalizeName(name) {
-      return name.trim().replace(/\\\\/g, "/");
-    }
-
-    function isUniqueName(name, ignoreIndex) {
-      return !state.files.some((f, idx) => idx !== ignoreIndex && f.name === name);
-    }
-
-    function scheduleAnalyze() {
-      if (state.debounceTimer) {
-        clearTimeout(state.debounceTimer);
-      }
-      state.debounceTimer = setTimeout(() => {
-        analyze();
-      }, state.debounceMs);
-    }
-
-    function updateActiveFileContent(content) {
-      const file = activeFile();
-      if (!file) {
-        return;
-      }
-      file.content = content;
-      scheduleAnalyze();
-    }
-
-    function updateActiveFileName(name) {
-      const file = activeFile();
-      if (!file) {
-        return;
-      }
-      const normalized = normalizeName(name);
-      if (!normalized || normalized === file.name) {
-        return;
-      }
-      if (!isUniqueName(normalized, state.activeIndex)) {
-        setStatus("Duplicate filename: " + normalized);
-        filenameEl.classList.add("bad");
-        return;
-      }
-      filenameEl.classList.remove("bad");
-      file.name = normalized;
-      renderTabs();
-      refreshHighlight();
-      scheduleAnalyze();
-    }
-
-    function renderResults(resultByTool) {
-      resultsEl.innerHTML = "";
-      toolOrder.forEach((tool) => {
-        const result = resultByTool[tool] || {};
-        const card = document.createElement("section");
-        card.className = "result-card";
-
-        const header = document.createElement("div");
-        header.className = "result-header";
-        const title = document.createElement("strong");
-        title.textContent = tool;
-        const meta = document.createElement("span");
-        meta.className = "meta";
-        const code = typeof result.returncode === "number" ? result.returncode : "?";
-        const ms = typeof result.duration_ms === "number" ? result.duration_ms : 0;
-        meta.textContent = "exit " + code + " | " + ms + "ms";
-        header.appendChild(title);
-        header.appendChild(meta);
-
-        const pre = document.createElement("pre");
-        const output = (result.output || "").trim();
-        pre.textContent = output || "(no output)";
-
-        card.appendChild(header);
-        card.appendChild(pre);
-        resultsEl.appendChild(card);
-      });
-    }
-
-    async function analyze() {
-      const requestId = ++state.requestNumber;
-      setStatus("Analyzing...");
-
-      const payload = {
-        files: state.files.map((f) => ({ name: f.name, content: f.content }))
-      };
-
-      try {
-        const resp = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        const body = await resp.json();
-        if (requestId < state.latestHandledRequest) {
-          return;
-        }
-        state.latestHandledRequest = requestId;
-        if (!resp.ok) {
-          setStatus("Request failed: " + (body.error || resp.status));
-          return;
-        }
-        renderResults(body.results || {});
-        tempDirEl.textContent = "Temp directory: " + (body.temp_dir || "");
-        setStatus("Last analysis: " + new Date().toLocaleTimeString());
-      } catch (err) {
-        setStatus("Error: " + err.message);
-      }
-    }
-
-    addFileBtn.addEventListener("click", () => {
-      let n = state.files.length + 1;
-      let name = "file_" + n + ".py";
-      while (!isUniqueName(name, -1)) {
-        n += 1;
-        name = "file_" + n + ".py";
-      }
-      state.files.push({ name, content: "" });
-      state.activeIndex = state.files.length - 1;
-      renderTabs();
-      syncEditorFromState();
-      scheduleAnalyze();
-    });
-
-    removeFileBtn.addEventListener("click", () => {
-      if (state.files.length <= 1) {
-        return;
-      }
-      state.files.splice(state.activeIndex, 1);
-      state.activeIndex = Math.max(0, state.activeIndex - 1);
-      renderTabs();
-      syncEditorFromState();
-      scheduleAnalyze();
-    });
-
-    editorEl.addEventListener("input", (event) => {
-      const content = event.target.value;
-      refreshHighlight(content);
-      updateActiveFileContent(content);
-    });
-    editorEl.addEventListener("scroll", () => {
-      syncHighlightScroll();
-    });
-
-    filenameEl.addEventListener("change", (event) => {
-      updateActiveFileName(event.target.value);
-    });
-    filenameEl.addEventListener("blur", (event) => {
-      updateActiveFileName(event.target.value);
-    });
-
-    renderTabs();
-    syncEditorFromState();
-    renderResults({});
-    analyze();
-  </script>
-</body>
-</html>
-"""
+TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -833,10 +69,19 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[s
     handler.wfile.write(data)
 
 
+def _bytes_response(handler: BaseHTTPRequestHandler, status: int, content_type: str, data: bytes) -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
 def _safe_relative_path(raw_name: str) -> Path:
     normalized = raw_name.strip().replace("\\", "/")
     if not normalized:
         raise ValueError("Filename cannot be empty")
+
     rel = Path(normalized)
     if rel.is_absolute():
         raise ValueError(f"Absolute path is not allowed: {raw_name!r}")
@@ -854,18 +99,21 @@ def _reset_project_dir(project_dir: Path) -> None:
 def _write_files_to_project(project_dir: Path, files: list[dict[str, Any]]) -> None:
     _reset_project_dir(project_dir)
     seen: set[Path] = set()
+
     for entry in files:
         name = str(entry.get("name", ""))
         content = entry.get("content", "")
         if not isinstance(content, str):
             raise ValueError(f"Content for {name!r} must be a string")
+
         rel = _safe_relative_path(name)
         if rel in seen:
             raise ValueError(f"Duplicate filename: {name!r}")
         seen.add(rel)
-        dest = project_dir / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
+
+        destination = project_dir / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding="utf-8")
 
 
 def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int = 120) -> dict[str, Any]:
@@ -873,6 +121,7 @@ def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int 
     env = os.environ.copy()
     env.setdefault("UV_CACHE_DIR", str(UV_CACHE_DIR))
     env.setdefault("UV_TOOL_DIR", str(UV_TOOL_DIR))
+
     try:
         completed = subprocess.run(
             command,
@@ -885,25 +134,82 @@ def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int 
         )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
-        if name == "pyright":
-            output = _format_pyright_output(stdout, stderr, cwd)
-        else:
-            output = stdout + stderr
-        rc = completed.returncode
+        output = _format_pyright_output(stdout, stderr, cwd) if name == "pyright" else (stdout + stderr)
+        returncode = completed.returncode
     except FileNotFoundError as exc:
         output = f"Command not found: {exc}"
-        rc = -1
+        returncode = -1
     except subprocess.TimeoutExpired:
         output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
-        rc = -2
+        returncode = -2
+
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
         "tool": name,
         "command": " ".join(command),
-        "returncode": rc,
+        "returncode": returncode,
         "duration_ms": duration_ms,
         "output": output,
     }
+
+
+_VERSION_RE = re.compile(r"\b\d+(?:\.\d+){1,3}(?:[-+._a-zA-Z0-9]*)?\b")
+
+
+def _extract_version(output: str) -> str:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _VERSION_RE.search(stripped)
+        if match:
+            return match.group(0)
+    return "unknown"
+
+
+def _detect_tool_versions(cwd: Path, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
+    version_results: dict[str, dict[str, Any]] = {}
+    env = os.environ.copy()
+    env.setdefault("UV_CACHE_DIR", str(UV_CACHE_DIR))
+    env.setdefault("UV_TOOL_DIR", str(UV_TOOL_DIR))
+
+    for spec in TOOL_SPECS:
+        started = time.perf_counter()
+        try:
+            completed = subprocess.run(
+                spec.version_command,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                env=env,
+                check=False,
+            )
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+            combined = (stdout + "\n" + stderr).strip()
+            returncode = completed.returncode
+            version = _extract_version(combined) if returncode == 0 else "unknown"
+        except FileNotFoundError as exc:
+            combined = f"Command not found: {exc}"
+            returncode = -1
+            version = "unknown"
+        except subprocess.TimeoutExpired:
+            combined = f"Timed out after {timeout_seconds}s: {' '.join(spec.version_command)}"
+            returncode = -2
+            version = "unknown"
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        version_results[spec.name] = {
+            "tool": spec.name,
+            "command": " ".join(spec.version_command),
+            "returncode": returncode,
+            "duration_ms": duration_ms,
+            "version": version,
+            "output": combined,
+        }
+
+    return version_results
 
 
 def _format_pyright_output(stdout: str, stderr: str, cwd: Path) -> str:
@@ -924,11 +230,8 @@ def _format_pyright_output(stdout: str, stderr: str, cwd: Path) -> str:
             if isinstance(file_path, str) and file_path:
                 display_path = _relativize_path(file_path, cwd)
 
-            severity = item.get("severity")
-            severity_text = severity if isinstance(severity, str) else "info"
-
-            message = item.get("message")
-            message_text = message if isinstance(message, str) else ""
+            severity = item.get("severity") if isinstance(item.get("severity"), str) else "info"
+            message = item.get("message") if isinstance(item.get("message"), str) else ""
 
             line_no = "?"
             col_no = "?"
@@ -936,33 +239,33 @@ def _format_pyright_output(stdout: str, stderr: str, cwd: Path) -> str:
             if isinstance(range_obj, dict):
                 start = range_obj.get("start")
                 if isinstance(start, dict):
-                    line_val = start.get("line")
-                    col_val = start.get("character")
-                    if isinstance(line_val, int):
-                        line_no = str(line_val + 1)
-                    if isinstance(col_val, int):
-                        col_no = str(col_val + 1)
+                    line = start.get("line")
+                    col = start.get("character")
+                    if isinstance(line, int):
+                        line_no = str(line + 1)
+                    if isinstance(col, int):
+                        col_no = str(col + 1)
 
             rule_suffix = ""
             rule = item.get("rule")
             if isinstance(rule, str) and rule:
                 rule_suffix = f" [{rule}]"
 
-            lines.append(f"{display_path}:{line_no}:{col_no}: {severity_text}: {message_text}{rule_suffix}")
+            lines.append(f"{display_path}:{line_no}:{col_no}: {severity}: {message}{rule_suffix}")
 
     summary = payload.get("summary")
     if isinstance(summary, dict):
         files = summary.get("filesAnalyzed")
         errors = summary.get("errorCount")
         warnings = summary.get("warningCount")
-        info = summary.get("informationCount")
+        information = summary.get("informationCount")
         time_in_sec = summary.get("timeInSec")
         lines.append(
             "summary: "
             f"files={files if isinstance(files, int) else '?'} "
             f"errors={errors if isinstance(errors, int) else '?'} "
             f"warnings={warnings if isinstance(warnings, int) else '?'} "
-            f"information={info if isinstance(info, int) else '?'} "
+            f"information={information if isinstance(information, int) else '?'} "
             f"time={time_in_sec if isinstance(time_in_sec, (int, float)) else '?'}s"
         )
 
@@ -991,13 +294,12 @@ def _relativize_path(path_text: str, cwd: Path) -> str:
     except OSError:
         pass
 
-    for abs_path, root in candidates:
+    for absolute_path, root in candidates:
         try:
-            return abs_path.relative_to(root).as_posix()
+            return absolute_path.relative_to(root).as_posix()
         except ValueError:
             continue
 
-    # If it's outside the temp project, keep an absolute path rather than a noisy ../../.. chain.
     return path.as_posix()
 
 
@@ -1017,31 +319,88 @@ def _run_all_tools(project_dir: Path) -> dict[str, dict[str, Any]]:
     return results
 
 
+def _prime_tool_installs() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Warm uvx tool installs and collect tool versions."""
+    prime_dir = Path(tempfile.mkdtemp(prefix="multifile-editor-prime-"))
+    try:
+        _write_files_to_project(prime_dir, [{"name": "main.py", "content": "x: int = 1\n"}])
+        prime_results = _run_all_tools(prime_dir)
+        version_results = _detect_tool_versions(prime_dir)
+        return prime_results, version_results
+    finally:
+        shutil.rmtree(prime_dir, ignore_errors=True)
+
+
+def _resolve_static_file(url_path: str) -> Path | None:
+    if url_path == "/":
+        candidate = STATIC_DIR / "index.html"
+        return candidate if candidate.is_file() else None
+
+    if not url_path.startswith("/static/"):
+        return None
+
+    relative = url_path[len("/static/") :]
+    if not relative:
+        return None
+
+    static_root = STATIC_DIR.resolve()
+    candidate = (static_root / relative).resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        return None
+
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _content_type_for(path: Path) -> str:
+    guessed, _ = mimetypes.guess_type(str(path))
+    if guessed is None:
+        return "application/octet-stream"
+    if guessed.startswith("text/") or guessed in {"application/javascript", "application/json"}:
+        return f"{guessed}; charset=utf-8"
+    return guessed
+
+
 class AppHandler(BaseHTTPRequestHandler):
-    server_version = "MultifileEditor/1.0"
+    server_version = "MultifileEditor/2.0"
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}")
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/" or self.path.startswith("/?"):
-            html = INDEX_HTML.replace("__INITIAL_FILES__", json.dumps(DEFAULT_FILES))
-            data = html.encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+        path = urlsplit(self.path).path
+
+        if path == "/api/health":
+            _json_response(self, HTTPStatus.OK, {"ok": True, "temp_dir": str(PROJECT_DIR)})
             return
 
-        if self.path == "/api/health":
-            _json_response(self, HTTPStatus.OK, {"ok": True, "temp_dir": str(PROJECT_DIR)})
+        if path == "/api/bootstrap":
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "initial_files": DEFAULT_FILES,
+                    "tool_order": [spec.name for spec in TOOL_SPECS],
+                    "tool_versions": dict(TOOL_VERSIONS),
+                    "temp_dir": str(PROJECT_DIR),
+                },
+            )
+            return
+
+        static_file = _resolve_static_file(path)
+        if static_file is not None:
+            data = static_file.read_bytes()
+            _bytes_response(self, HTTPStatus.OK, _content_type_for(static_file), data)
             return
 
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/analyze":
+        path = urlsplit(self.path).path
+        if path != "/api/analyze":
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
 
@@ -1050,14 +409,17 @@ class AppHandler(BaseHTTPRequestHandler):
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
+
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files)
                 results = _run_all_tools(PROJECT_DIR)
+
             _json_response(
                 self,
                 HTTPStatus.OK,
                 {
                     "results": results,
+                    "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
                 },
             )
@@ -1072,9 +434,11 @@ class AppHandler(BaseHTTPRequestHandler):
         raw_length = self.headers.get("Content-Length", "0").strip()
         if not raw_length.isdigit():
             raise ValueError("Invalid Content-Length header")
+
         length = int(raw_length)
         if length <= 0:
             raise ValueError("Empty request body")
+
         payload = self.rfile.read(length)
         data = json.loads(payload.decode("utf-8"))
         if not isinstance(data, dict):
@@ -1086,14 +450,46 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web app with multi-file editor and typecheckers")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", default=8000, type=int, help="Port to bind (default: 8000)")
+    parser.add_argument(
+        "--skip-prime",
+        action="store_true",
+        help="Skip startup uvx priming (default: prime enabled)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    if not STATIC_DIR.is_dir():
+        raise SystemExit(f"Static directory not found: {STATIC_DIR}")
+
     args = parse_args()
+    if not args.skip_prime:
+        print("Priming tool installs (uvx)...")
+        prime_results, version_results = _prime_tool_installs()
+        for spec in TOOL_SPECS:
+            version_info = version_results.get(spec.name, {})
+            raw_version = version_info.get("version")
+            TOOL_VERSIONS[spec.name] = raw_version if isinstance(raw_version, str) and raw_version else "unknown"
+
+        for spec in TOOL_SPECS:
+            result = prime_results.get(spec.name, {})
+            version = TOOL_VERSIONS.get(spec.name, "unknown")
+            returncode = result.get("returncode", "?")
+            duration_ms = result.get("duration_ms", "?")
+            print(f"  {spec.name} v{version}: rc={returncode} ({duration_ms}ms)")
+            if returncode != 0:
+                output = str(result.get("output", "")).strip()
+                first_line = output.splitlines()[0] if output else ""
+                if first_line:
+                    print(f"    {first_line}")
+    else:
+        print("Skipping tool priming (--skip-prime)")
+
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)
     print(f"Serving app on http://{args.host}:{args.port}")
+    print(f"Static directory: {STATIC_DIR}")
     print(f"Temporary project directory: {PROJECT_DIR}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

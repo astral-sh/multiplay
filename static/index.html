@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Multi-file Typechecker Editor</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Multi-file editor with live type checking</h1>
+      <p class="status" id="status">Loading...</p>
+      <p class="status" id="temp-dir"></p>
+    </div>
+
+    <div class="tabs-wrap">
+      <div id="tabs"></div>
+      <div class="controls">
+        <input class="name-input" id="filename" placeholder="filename.py" />
+        <button class="btn" id="add-file" type="button">Add file</button>
+        <button class="btn" id="remove-file" type="button">Remove file</button>
+      </div>
+    </div>
+
+    <div class="workspace">
+      <div class="editor-wrap">
+        <div class="editor-shell">
+          <pre id="highlight" aria-hidden="true"></pre>
+          <textarea id="editor" spellcheck="false" wrap="off"></textarea>
+        </div>
+      </div>
+
+      <div class="results" id="results"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
