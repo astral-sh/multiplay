@@ -173,18 +173,130 @@ INDEX_HTML = """<!doctype html>
       box-shadow: var(--shadow);
       overflow: hidden;
     }
+    .editor-shell {
+      position: relative;
+      height: clamp(360px, 52vh, 760px);
+      min-width: 0;
+    }
+    #highlight,
     textarea {
       width: 100%;
-      min-height: 420px;
+      height: 100%;
+      margin: 0;
       border: none;
       outline: none;
-      resize: vertical;
       padding: 14px;
       font-family: var(--mono);
       font-size: 0.92rem;
       line-height: 1.45;
+      tab-size: 4;
+      overflow: auto;
+      white-space: pre;
+      word-break: normal;
+    }
+    #highlight {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
       background: #fff;
       color: #18202a;
+    }
+    textarea {
+      position: relative;
+      resize: none;
+      background: transparent;
+      color: transparent;
+      caret-color: #18202a;
+    }
+    textarea::selection {
+      background: rgba(13, 122, 111, 0.24);
+      color: transparent;
+    }
+    .py-keyword {
+      color: #7a2f83;
+      font-weight: 600;
+    }
+    .py-string {
+      color: #0f6d40;
+    }
+    .py-comment {
+      color: #6f7780;
+      font-style: italic;
+    }
+    .py-number {
+      color: #9a4500;
+    }
+    .py-builtin {
+      color: #0c5f90;
+    }
+    .py-decorator {
+      color: #8e3600;
+      font-weight: 600;
+    }
+    .toml-table {
+      color: #7a2f83;
+      font-weight: 600;
+    }
+    .toml-key {
+      color: #0c5f90;
+      font-weight: 600;
+    }
+    .toml-string {
+      color: #0f6d40;
+    }
+    .toml-comment {
+      color: #6f7780;
+      font-style: italic;
+    }
+    .toml-bool {
+      color: #8e3600;
+      font-weight: 600;
+    }
+    .toml-number {
+      color: #9a4500;
+    }
+    .json-key {
+      color: #0c5f90;
+      font-weight: 600;
+    }
+    .json-string {
+      color: #0f6d40;
+    }
+    .json-bool {
+      color: #8e3600;
+      font-weight: 600;
+    }
+    .json-null {
+      color: #7a2f83;
+      font-weight: 600;
+    }
+    .json-number {
+      color: #9a4500;
+    }
+    .json-punct {
+      color: #545d66;
+    }
+    .ini-section {
+      color: #7a2f83;
+      font-weight: 600;
+    }
+    .ini-key {
+      color: #0c5f90;
+      font-weight: 600;
+    }
+    .ini-comment {
+      color: #6f7780;
+      font-style: italic;
+    }
+    .ini-string {
+      color: #0f6d40;
+    }
+    .ini-bool {
+      color: #8e3600;
+      font-weight: 600;
+    }
+    .ini-number {
+      color: #9a4500;
     }
     .results {
       display: flex;
@@ -215,7 +327,7 @@ INDEX_HTML = """<!doctype html>
       color: var(--muted);
       font-size: 0.8rem;
     }
-    pre {
+    .result-card pre {
       margin: 0;
       padding: 12px;
       overflow: auto;
@@ -269,7 +381,10 @@ INDEX_HTML = """<!doctype html>
 
     <div class="workspace">
       <div class="editor-wrap">
-        <textarea id="editor" spellcheck="false"></textarea>
+        <div class="editor-shell">
+          <pre id="highlight" aria-hidden="true"></pre>
+          <textarea id="editor" spellcheck="false" wrap="off"></textarea>
+        </div>
       </div>
 
       <div class="results" id="results"></div>
@@ -291,6 +406,7 @@ INDEX_HTML = """<!doctype html>
 
     const tabsEl = document.getElementById("tabs");
     const filenameEl = document.getElementById("filename");
+    const highlightEl = document.getElementById("highlight");
     const editorEl = document.getElementById("editor");
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
@@ -300,6 +416,225 @@ INDEX_HTML = """<!doctype html>
 
     function setStatus(text) {
       statusEl.textContent = text;
+    }
+
+    const PY_TOKEN_RE = /(#[^\\n]*)|(\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|"(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*')|\\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\\b|\\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\\b|(\\b\\d+(?:\\.\\d+)?\\b)|(@[A-Za-z_]\\w*)/gm;
+    const TOML_TOKEN_RE = /(^\\s*\\[\\[[^\\]\\n]+\\]\\])|(^\\s*\\[[^\\]\\n]+\\])|(^\\s*(?:"[^"\\n]+"|'[^'\\n]+'|[A-Za-z0-9_.-]+)\\s*(?==))|(#[^\\n]*)|(\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|"(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*')|\\b(true|false)\\b|(\\b[+-]?\\d+(?:\\.\\d+)?\\b)/gim;
+    const JSON_TOKEN_RE = /("(?:\\\\.|[^"\\\\\\n])*"\\s*(?=:))|("(?:\\\\.|[^"\\\\\\n])*")|(\\b(?:true|false)\\b)|(\\bnull\\b)|(\\b-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)|([{}\\[\\],:])/gm;
+    const INI_TOKEN_RE = /(^\\s*[;#].*$)|(^\\s*\\[[^\\]\\n]+\\])|(^\\s*[A-Za-z0-9_.-]+\\s*(?==))|("(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*')|(\\b(?:true|false|yes|no|on|off)\\b)|(\\b[+-]?\\d+(?:\\.\\d+)?\\b)/gim;
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function extensionOf(filename) {
+      const name = (filename || "").trim().toLowerCase();
+      const dot = name.lastIndexOf(".");
+      if (dot < 0) {
+        return "";
+      }
+      return name.slice(dot);
+    }
+
+    function withVisibleTrailingNewline(source, html) {
+      if (!html) {
+        return " ";
+      }
+      if (source.endsWith("\\n")) {
+        return html + " ";
+      }
+      return html;
+    }
+
+    function renderPlain(source) {
+      return withVisibleTrailingNewline(source, escapeHtml(source));
+    }
+
+    function renderPython(source) {
+      let html = "";
+      let lastIndex = 0;
+      PY_TOKEN_RE.lastIndex = 0;
+
+      for (const match of source.matchAll(PY_TOKEN_RE)) {
+        const idx = match.index || 0;
+        if (idx > lastIndex) {
+          html += escapeHtml(source.slice(lastIndex, idx));
+        }
+
+        const token = match[0];
+        let cls = "";
+        if (match[1]) {
+          cls = "py-comment";
+        } else if (match[2]) {
+          cls = "py-string";
+        } else if (match[3]) {
+          cls = "py-keyword";
+        } else if (match[4]) {
+          cls = "py-builtin";
+        } else if (match[5]) {
+          cls = "py-number";
+        } else if (match[6]) {
+          cls = "py-decorator";
+        }
+
+        const escaped = escapeHtml(token);
+        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
+        lastIndex = idx + token.length;
+      }
+
+      if (lastIndex < source.length) {
+        html += escapeHtml(source.slice(lastIndex));
+      }
+      return withVisibleTrailingNewline(source, html);
+    }
+
+    function renderToml(source) {
+      let html = "";
+      let lastIndex = 0;
+      TOML_TOKEN_RE.lastIndex = 0;
+
+      for (const match of source.matchAll(TOML_TOKEN_RE)) {
+        const idx = match.index || 0;
+        if (idx > lastIndex) {
+          html += escapeHtml(source.slice(lastIndex, idx));
+        }
+
+        const token = match[0];
+        let cls = "";
+        if (match[1] || match[2]) {
+          cls = "toml-table";
+        } else if (match[3]) {
+          cls = "toml-key";
+        } else if (match[4]) {
+          cls = "toml-comment";
+        } else if (match[5]) {
+          cls = "toml-string";
+        } else if (match[6]) {
+          cls = "toml-bool";
+        } else if (match[7]) {
+          cls = "toml-number";
+        }
+
+        const escaped = escapeHtml(token);
+        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
+        lastIndex = idx + token.length;
+      }
+
+      if (lastIndex < source.length) {
+        html += escapeHtml(source.slice(lastIndex));
+      }
+      return withVisibleTrailingNewline(source, html);
+    }
+
+    function renderJson(source) {
+      let html = "";
+      let lastIndex = 0;
+      JSON_TOKEN_RE.lastIndex = 0;
+
+      for (const match of source.matchAll(JSON_TOKEN_RE)) {
+        const idx = match.index || 0;
+        if (idx > lastIndex) {
+          html += escapeHtml(source.slice(lastIndex, idx));
+        }
+
+        const token = match[0];
+        let cls = "";
+        if (match[1]) {
+          cls = "json-key";
+        } else if (match[2]) {
+          cls = "json-string";
+        } else if (match[3]) {
+          cls = "json-bool";
+        } else if (match[4]) {
+          cls = "json-null";
+        } else if (match[5]) {
+          cls = "json-number";
+        } else if (match[6]) {
+          cls = "json-punct";
+        }
+
+        const escaped = escapeHtml(token);
+        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
+        lastIndex = idx + token.length;
+      }
+
+      if (lastIndex < source.length) {
+        html += escapeHtml(source.slice(lastIndex));
+      }
+      return withVisibleTrailingNewline(source, html);
+    }
+
+    function renderIni(source) {
+      let html = "";
+      let lastIndex = 0;
+      INI_TOKEN_RE.lastIndex = 0;
+
+      for (const match of source.matchAll(INI_TOKEN_RE)) {
+        const idx = match.index || 0;
+        if (idx > lastIndex) {
+          html += escapeHtml(source.slice(lastIndex, idx));
+        }
+
+        const token = match[0];
+        let cls = "";
+        if (match[1]) {
+          cls = "ini-comment";
+        } else if (match[2]) {
+          cls = "ini-section";
+        } else if (match[3]) {
+          cls = "ini-key";
+        } else if (match[4]) {
+          cls = "ini-string";
+        } else if (match[5]) {
+          cls = "ini-bool";
+        } else if (match[6]) {
+          cls = "ini-number";
+        }
+
+        const escaped = escapeHtml(token);
+        html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
+        lastIndex = idx + token.length;
+      }
+
+      if (lastIndex < source.length) {
+        html += escapeHtml(source.slice(lastIndex));
+      }
+      return withVisibleTrailingNewline(source, html);
+    }
+
+    function renderHighlightedCode(source, filename) {
+      const ext = extensionOf(filename);
+      if (ext === ".py" || ext === ".pyi") {
+        return renderPython(source);
+      }
+      if (ext === ".toml") {
+        return renderToml(source);
+      }
+      if (ext === ".json") {
+        return renderJson(source);
+      }
+      if (ext === ".ini" || ext === ".cfg") {
+        return renderIni(source);
+      }
+      return renderPlain(source);
+    }
+
+    function syncHighlightScroll() {
+      highlightEl.scrollTop = editorEl.scrollTop;
+      highlightEl.scrollLeft = editorEl.scrollLeft;
+    }
+
+    function refreshHighlight(content) {
+      const file = activeFile();
+      const source = typeof content === "string" ? content : file ? file.content : "";
+      const filename = file ? file.name : "";
+      highlightEl.innerHTML = renderHighlightedCode(source, filename);
+      syncHighlightScroll();
     }
 
     function activeFile() {
@@ -325,6 +660,9 @@ INDEX_HTML = """<!doctype html>
       const file = activeFile();
       filenameEl.value = file ? file.name : "";
       editorEl.value = file ? file.content : "";
+      editorEl.scrollTop = 0;
+      editorEl.scrollLeft = 0;
+      refreshHighlight(file ? file.content : "");
       removeFileBtn.disabled = state.files.length <= 1;
     }
 
@@ -371,6 +709,7 @@ INDEX_HTML = """<!doctype html>
       filenameEl.classList.remove("bad");
       file.name = normalized;
       renderTabs();
+      refreshHighlight();
       scheduleAnalyze();
     }
 
@@ -460,7 +799,12 @@ INDEX_HTML = """<!doctype html>
     });
 
     editorEl.addEventListener("input", (event) => {
-      updateActiveFileContent(event.target.value);
+      const content = event.target.value;
+      refreshHighlight(content);
+      updateActiveFileContent(content);
+    });
+    editorEl.addEventListener("scroll", () => {
+      syncHighlightScroll();
     });
 
     filenameEl.addEventListener("change", (event) => {
