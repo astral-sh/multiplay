@@ -5,10 +5,12 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 1. Send all files to `/api/analyze`
 2. Rewrite all files into a local temporary directory
 3. Run:
-   - `uvx mypy --color-output .`
+   - `uvx ty check .`
    - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
    - `uvx pyrefly check .`
-   - `uvx ty check .`
+   - `uvx mypy --color-output .`
+   - `uvx zuban check .`
+   - `uvx pycroscope --output-format concise .`
 4. Display output from each tool in the UI
 
 ## Run
@@ -24,6 +26,10 @@ Then open:
 On startup, the server primes `uvx` installs for all tools so the first
 `/api/analyze` call is faster, and prints detected checker versions. The UI
 also shows each detected version in the checker pane header.
+
+Each checker card includes:
+- an `On`/`Off` toggle (disabled tools are skipped by the backend)
+- an up/down arrow to hide/show that checker's output panel
 
 The header also has a dependency field (comma/newline separated). When non-empty:
 - dependencies are installed in the temp project with `uv add ...`

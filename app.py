@@ -46,11 +46,19 @@ class ToolSpec:
 
 
 TOOL_SPECS = [
-    ToolSpec("mypy", ["uvx", "mypy", "--color-output", "."], ["uvx", "mypy", "--version"]),
+    ToolSpec("ty", ["uvx", "ty", "check", "."], ["uvx", "ty", "--version"]),
     ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."], ["uvx", "pyright", "--version"]),
     ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."], ["uvx", "pyrefly", "--version"]),
-    ToolSpec("ty", ["uvx", "ty", "check", "."], ["uvx", "ty", "--version"]),
+    ToolSpec("mypy", ["uvx", "mypy", "--color-output", "."], ["uvx", "mypy", "--version"]),
+    ToolSpec("zuban", ["uvx", "zuban", "check", "."], ["uvx", "zuban", "--version"]),
+    ToolSpec(
+        "pycroscope",
+        ["uvx", "pycroscope", "--output-format", "concise", "."],
+        ["uvx", "--from", "pycroscope", "python", "-c", "import importlib.metadata as m; print(m.version('pycroscope'))"],
+    ),
 ]
+TOOL_SPEC_BY_NAME = {spec.name: spec for spec in TOOL_SPECS}
+TOOL_ORDER = [spec.name for spec in TOOL_SPECS]
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -162,6 +170,27 @@ def _normalize_dependencies(raw: Any) -> list[str]:
     return normalized
 
 
+def _normalize_enabled_tools(raw: Any) -> list[str]:
+    if raw is None:
+        return list(TOOL_ORDER)
+
+    if not isinstance(raw, list):
+        raise ValueError("enabled_tools must be a list of tool names")
+
+    requested: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("enabled_tools must contain only strings")
+        name = item.strip()
+        if not name:
+            continue
+        if name not in TOOL_SPEC_BY_NAME:
+            raise ValueError(f"Unknown tool: {name!r}")
+        requested.add(name)
+
+    return [tool_name for tool_name in TOOL_ORDER if tool_name in requested]
+
+
 def _ensure_minimal_pyproject(project_dir: Path) -> None:
     pyproject = project_dir / "pyproject.toml"
     if pyproject.exists():
@@ -270,6 +299,14 @@ def _run_command(
     env = _command_env()
     if env_overrides:
         env.update(env_overrides)
+    if name == "pycroscope":
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        project_path = str(cwd)
+        env["PYTHONPATH"] = (
+            f"{project_path}{os.pathsep}{existing_pythonpath}"
+            if existing_pythonpath
+            else project_path
+        )
 
     try:
         completed = subprocess.run(
@@ -450,7 +487,11 @@ def _relativize_path(path_text: str, cwd: Path) -> str:
     return path.as_posix()
 
 
-def _run_all_tools(project_dir: Path, venv_python: Path | None = None) -> dict[str, dict[str, Any]]:
+def _run_all_tools(
+    project_dir: Path,
+    venv_python: Path | None = None,
+    enabled_tools: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     env_overrides: dict[str, str] | None = None
     if venv_python is not None:
@@ -461,8 +502,12 @@ def _run_all_tools(project_dir: Path, venv_python: Path | None = None) -> dict[s
             "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
         }
 
-    command_by_tool = {spec.name: _command_for_tool(spec, venv_python) for spec in TOOL_SPECS}
-    with ThreadPoolExecutor(max_workers=len(TOOL_SPECS)) as executor:
+    selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools]
+    if not selected_specs:
+        return results
+
+    command_by_tool = {spec.name: _command_for_tool(spec, venv_python) for spec in selected_specs}
+    with ThreadPoolExecutor(max_workers=max(1, len(selected_specs))) as executor:
         futures = {
             executor.submit(
                 _run_command,
@@ -559,7 +604,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 {
                     "initial_files": DEFAULT_FILES,
                     "initial_dependencies": DEFAULT_DEPENDENCIES,
-                    "tool_order": [spec.name for spec in TOOL_SPECS],
+                    "tool_order": list(TOOL_ORDER),
+                    "enabled_tools": list(TOOL_ORDER),
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
                 },
@@ -586,6 +632,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
             dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
+            enabled_tools = _normalize_enabled_tools(body.get("enabled_tools"))
 
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files, keep_venv=bool(dependencies))
@@ -599,6 +646,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "error_type": "dependency_install_failed",
                             "dependency_install": dependency_install,
                             "dependencies": dependencies,
+                            "enabled_tools": enabled_tools,
                             "tool_versions": dict(TOOL_VERSIONS),
                             "temp_dir": str(PROJECT_DIR),
                         },
@@ -606,7 +654,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
 
                 venv_python = _venv_python_path(PROJECT_DIR) if dependencies else None
-                results = _run_all_tools(PROJECT_DIR, venv_python)
+                results = _run_all_tools(PROJECT_DIR, venv_python, enabled_tools)
 
             _json_response(
                 self,
@@ -615,6 +663,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "results": results,
                     "tool_versions": dict(TOOL_VERSIONS),
                     "dependencies": dependencies,
+                    "enabled_tools": enabled_tools,
                     "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
                 },

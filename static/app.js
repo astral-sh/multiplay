@@ -11,7 +11,7 @@ const DEFAULT_FILES = [
   { name: "helpers.py", content: "def greet(name: str) -> str:\n    return f'hello, {name}'\n" },
 ];
 
-const DEFAULT_TOOL_ORDER = ["mypy", "pyright", "pyrefly", "ty"];
+const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycroscope"];
 let toolOrder = DEFAULT_TOOL_ORDER.slice();
 
 const state = {
@@ -24,6 +24,8 @@ const state = {
   requestNumber: 0,
   latestHandledRequest: 0,
   toolVersions: {},
+  toolSettings: {},
+  lastResults: {},
 };
 
 const tabsEl = document.getElementById("tabs");
@@ -670,6 +672,46 @@ function dependenciesToText(dependencies) {
   return dependencies.join(", ");
 }
 
+function normalizeToolList(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const normalized = [];
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const value = item.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    normalized.push(value);
+  }
+  return normalized;
+}
+
+function ensureToolSettings() {
+  const next = {};
+  toolOrder.forEach((tool) => {
+    const existing = state.toolSettings[tool];
+    next[tool] = {
+      enabled: !existing || existing.enabled !== false,
+      collapsed: !!(existing && existing.collapsed),
+    };
+  });
+  state.toolSettings = next;
+}
+
+function enabledTools() {
+  return toolOrder.filter((tool) => {
+    const settings = state.toolSettings[tool];
+    return !settings || settings.enabled !== false;
+  });
+}
+
 function updateDependenciesFromInput({ triggerAnalyze } = { triggerAnalyze: false }) {
   const parsed = parseDependencies(depsInputEl.value);
   const nextText = dependenciesToText(parsed);
@@ -770,14 +812,28 @@ function finishTabRename(index, rawName, keepOpenOnError) {
 
 function renderResults(resultByTool) {
   resultsEl.innerHTML = "";
+  ensureToolSettings();
 
   toolOrder.forEach((tool) => {
+    const settings = state.toolSettings[tool];
+    const enabled = !settings || settings.enabled !== false;
+    const collapsed = !!(settings && settings.collapsed);
     const result = resultByTool[tool] || {};
+
     const card = document.createElement("section");
     card.className = "result-card";
+    if (!enabled) {
+      card.classList.add("tool-disabled");
+    }
+    if (collapsed) {
+      card.classList.add("collapsed");
+    }
 
     const header = document.createElement("div");
     header.className = "result-header";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "result-title-wrap";
 
     const title = document.createElement("strong");
     const version = state.toolVersions[tool];
@@ -785,19 +841,69 @@ function renderResults(resultByTool) {
       typeof version === "string" && version && version !== "unknown"
         ? `${tool} v${version}`
         : `${tool}`;
+    titleWrap.appendChild(title);
+
+    const right = document.createElement("div");
+    right.className = "result-header-right";
 
     const meta = document.createElement("span");
     meta.className = "meta";
-    const code = typeof result.returncode === "number" ? result.returncode : "?";
-    const ms = typeof result.duration_ms === "number" ? result.duration_ms : 0;
-    meta.textContent = "exit " + code + " | " + ms + "ms";
+    if (!enabled) {
+      meta.textContent = "disabled";
+    } else if (typeof result.returncode === "number") {
+      const code = result.returncode;
+      const ms = typeof result.duration_ms === "number" ? result.duration_ms : 0;
+      meta.textContent = "exit " + code + " | " + ms + "ms";
+    } else {
+      meta.textContent = "pending";
+    }
 
-    header.appendChild(title);
-    header.appendChild(meta);
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "tool-toggle " + (enabled ? "enabled" : "disabled");
+    toggleBtn.textContent = enabled ? "On" : "Off";
+    toggleBtn.title = enabled ? `Turn off ${tool}` : `Turn on ${tool}`;
+    toggleBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const current = state.toolSettings[tool];
+      if (!current) {
+        return;
+      }
+      current.enabled = !(current.enabled !== false);
+      renderResults(state.lastResults);
+      scheduleAnalyze();
+    });
+
+    const collapseBtn = document.createElement("button");
+    collapseBtn.type = "button";
+    collapseBtn.className = "tool-collapse";
+    collapseBtn.textContent = collapsed ? "▼" : "▲";
+    collapseBtn.title = collapsed ? `Show ${tool} output` : `Hide ${tool} output`;
+    collapseBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const current = state.toolSettings[tool];
+      if (!current) {
+        return;
+      }
+      current.collapsed = !current.collapsed;
+      renderResults(state.lastResults);
+    });
+
+    right.appendChild(meta);
+    right.appendChild(toggleBtn);
+    right.appendChild(collapseBtn);
+    header.appendChild(titleWrap);
+    header.appendChild(right);
 
     const pre = document.createElement("pre");
-    const output = typeof result.output === "string" ? result.output : "";
-    pre.innerHTML = ansiToHtml(output);
+    if (!enabled) {
+      pre.textContent = "Tool is turned off for this analysis.";
+    } else {
+      const output = typeof result.output === "string" ? result.output : "";
+      pre.innerHTML = ansiToHtml(output);
+    }
 
     card.appendChild(header);
     card.appendChild(pre);
@@ -812,6 +918,7 @@ async function analyze() {
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     dependencies: state.dependencies.slice(),
+    enabled_tools: enabledTools(),
   };
 
   try {
@@ -842,6 +949,15 @@ async function analyze() {
     if (body.tool_versions && typeof body.tool_versions === "object") {
       state.toolVersions = { ...state.toolVersions, ...body.tool_versions };
     }
+    if (Array.isArray(body.enabled_tools)) {
+      const enabledSet = new Set(normalizeToolList(body.enabled_tools));
+      toolOrder.forEach((tool) => {
+        const settings = state.toolSettings[tool];
+        if (settings) {
+          settings.enabled = enabledSet.has(tool);
+        }
+      });
+    }
     if (Array.isArray(body.dependencies)) {
       state.dependencies = body.dependencies
         .filter((dep) => typeof dep === "string")
@@ -850,7 +966,8 @@ async function analyze() {
       depsInputEl.value = dependenciesToText(state.dependencies);
     }
 
-    renderResults(body.results || {});
+    state.lastResults = body.results && typeof body.results === "object" ? body.results : {};
+    renderResults(state.lastResults);
     tempDirEl.textContent = "Temp directory: " + (body.temp_dir || "");
     setStatus("Last analysis: " + new Date().toLocaleTimeString());
   } catch (err) {
@@ -933,8 +1050,22 @@ function loadFromBootstrap(body) {
   state.files = normalizedFiles.length > 0 ? normalizedFiles : DEFAULT_FILES.slice();
   state.activeIndex = 0;
 
-  if (Array.isArray(body.tool_order) && body.tool_order.length > 0) {
-    toolOrder = body.tool_order.slice();
+  const bootstrapToolOrder = normalizeToolList(body.tool_order);
+  if (bootstrapToolOrder.length > 0) {
+    toolOrder = bootstrapToolOrder;
+  } else {
+    toolOrder = DEFAULT_TOOL_ORDER.slice();
+  }
+  ensureToolSettings();
+
+  if (Array.isArray(body.enabled_tools)) {
+    const enabledSet = new Set(normalizeToolList(body.enabled_tools));
+    toolOrder.forEach((tool) => {
+      const settings = state.toolSettings[tool];
+      if (settings) {
+        settings.enabled = enabledSet.has(tool);
+      }
+    });
   }
 
   if (body.tool_versions && typeof body.tool_versions === "object") {
@@ -956,6 +1087,8 @@ function loadFromBootstrap(body) {
   if (typeof body.temp_dir === "string" && body.temp_dir) {
     tempDirEl.textContent = "Temp directory: " + body.temp_dir;
   }
+
+  state.lastResults = {};
 }
 
 async function bootstrap() {
@@ -972,6 +1105,10 @@ async function bootstrap() {
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
     state.dependencies = [];
+    toolOrder = DEFAULT_TOOL_ORDER.slice();
+    state.toolSettings = {};
+    ensureToolSettings();
+    state.lastResults = {};
     depsInputEl.value = "";
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
