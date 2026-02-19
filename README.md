@@ -14,23 +14,16 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 ## Run
 
 ```bash
-python3 /Users/carlmeyer/projects/multiplay/app.py --host 127.0.0.1 --port 8000
+uv run app.py
 ```
 
 Then open:
 
-- [http://127.0.0.1:8000](http://127.0.0.1:8000)
+- [http://localhost:8000](http://localhost:8000)
 
 On startup, the server primes `uvx` installs for all tools so the first
 `/api/analyze` call is faster, and prints detected checker versions. The UI
-also shows each detected version in the checker pane header. To skip this
-warmup:
-
-```bash
-python3 /Users/carlmeyer/projects/multiplay/app.py --skip-prime
-```
-
-Using your system uv cache/tool directories keeps startup and warm runs faster.
+also shows each detected version in the checker pane header.
 
 ## Configuring
 
