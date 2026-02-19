@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import mimetypes
 import os
@@ -460,23 +461,32 @@ def _run_all_tools(project_dir: Path, venv_python: Path | None = None) -> dict[s
             "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
         }
 
-    for spec in TOOL_SPECS:
-        command = _command_for_tool(spec, venv_python)
-        try:
-            results[spec.name] = _run_command(
-                spec.name,
+    command_by_tool = {spec.name: _command_for_tool(spec, venv_python) for spec in TOOL_SPECS}
+    with ThreadPoolExecutor(max_workers=len(TOOL_SPECS)) as executor:
+        futures = {
+            executor.submit(
+                _run_command,
+                tool_name,
                 command,
                 project_dir,
-                env_overrides=env_overrides,
-            )
-        except Exception as exc:  # pragma: no cover
-            results[spec.name] = {
-                "tool": spec.name,
-                "command": " ".join(command),
-                "returncode": -3,
-                "duration_ms": 0,
-                "output": f"Internal error: {exc}",
-            }
+                120,
+                env_overrides,
+            ): tool_name
+            for tool_name, command in command_by_tool.items()
+        }
+        for future in as_completed(futures):
+            tool_name = futures[future]
+            command = command_by_tool[tool_name]
+            try:
+                results[tool_name] = future.result()
+            except Exception as exc:  # pragma: no cover
+                results[tool_name] = {
+                    "tool": tool_name,
+                    "command": " ".join(command),
+                    "returncode": -3,
+                    "duration_ms": 0,
+                    "output": f"Internal error: {exc}",
+                }
     return results
 
 
