@@ -6,7 +6,7 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 2. Rewrite all files into a local temporary directory
 3. Run:
    - `uvx mypy .`
-   - `uvx pyright .`
+   - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
    - `uvx pyrefly check .`
    - `uvx ty check .`
 4. Display output from each tool in the UI

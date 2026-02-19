@@ -41,7 +41,7 @@ class ToolSpec:
 
 TOOL_SPECS = [
     ToolSpec("mypy", ["uvx", "mypy", "."]),
-    ToolSpec("pyright", ["uvx", "pyright", "."]),
+    ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."]),
     ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."]),
     ToolSpec("ty", ["uvx", "ty", "check", "."]),
 ]
@@ -524,7 +524,12 @@ def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int 
             env=env,
             check=False,
         )
-        output = (completed.stdout or "") + (completed.stderr or "")
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if name == "pyright":
+            output = _format_pyright_output(stdout, stderr, cwd)
+        else:
+            output = stdout + stderr
         rc = completed.returncode
     except FileNotFoundError as exc:
         output = f"Command not found: {exc}"
@@ -540,6 +545,101 @@ def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int 
         "duration_ms": duration_ms,
         "output": output,
     }
+
+
+def _format_pyright_output(stdout: str, stderr: str, cwd: Path) -> str:
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout + stderr
+
+    lines: list[str] = []
+    diagnostics = payload.get("generalDiagnostics")
+    if isinstance(diagnostics, list):
+        for item in diagnostics:
+            if not isinstance(item, dict):
+                continue
+
+            file_path = item.get("file")
+            display_path = "<unknown>"
+            if isinstance(file_path, str) and file_path:
+                display_path = _relativize_path(file_path, cwd)
+
+            severity = item.get("severity")
+            severity_text = severity if isinstance(severity, str) else "info"
+
+            message = item.get("message")
+            message_text = message if isinstance(message, str) else ""
+
+            line_no = "?"
+            col_no = "?"
+            range_obj = item.get("range")
+            if isinstance(range_obj, dict):
+                start = range_obj.get("start")
+                if isinstance(start, dict):
+                    line_val = start.get("line")
+                    col_val = start.get("character")
+                    if isinstance(line_val, int):
+                        line_no = str(line_val + 1)
+                    if isinstance(col_val, int):
+                        col_no = str(col_val + 1)
+
+            rule_suffix = ""
+            rule = item.get("rule")
+            if isinstance(rule, str) and rule:
+                rule_suffix = f" [{rule}]"
+
+            lines.append(f"{display_path}:{line_no}:{col_no}: {severity_text}: {message_text}{rule_suffix}")
+
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        files = summary.get("filesAnalyzed")
+        errors = summary.get("errorCount")
+        warnings = summary.get("warningCount")
+        info = summary.get("informationCount")
+        time_in_sec = summary.get("timeInSec")
+        lines.append(
+            "summary: "
+            f"files={files if isinstance(files, int) else '?'} "
+            f"errors={errors if isinstance(errors, int) else '?'} "
+            f"warnings={warnings if isinstance(warnings, int) else '?'} "
+            f"information={info if isinstance(info, int) else '?'} "
+            f"time={time_in_sec if isinstance(time_in_sec, (int, float)) else '?'}s"
+        )
+
+    if stderr.strip():
+        lines.append("")
+        lines.append("stderr:")
+        lines.append(stderr.strip())
+
+    if not lines:
+        return "(no output)"
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _relativize_path(path_text: str, cwd: Path) -> str:
+    try:
+        path = Path(path_text)
+    except (TypeError, ValueError):
+        return path_text
+
+    if not path.is_absolute():
+        return path.as_posix()
+
+    candidates: list[tuple[Path, Path]] = [(path, cwd)]
+    try:
+        candidates.append((path.resolve(strict=False), cwd.resolve(strict=False)))
+    except OSError:
+        pass
+
+    for abs_path, root in candidates:
+        try:
+            return abs_path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+
+    # If it's outside the temp project, keep an absolute path rather than a noisy ../../.. chain.
+    return path.as_posix()
 
 
 def _run_all_tools(project_dir: Path) -> dict[str, dict[str, Any]]:
