@@ -39,6 +39,44 @@ const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const tempDirEl = document.getElementById("temp-dir");
 const depErrorEl = document.getElementById("dep-error");
+const themeToggleEl = document.getElementById("theme-toggle");
+
+// Theme handling
+function initTheme() {
+  const stored = localStorage.getItem("theme");
+  if (stored === "dark" || stored === "light") {
+    document.documentElement.setAttribute("data-theme", stored);
+  }
+  // If no stored preference, CSS media query handles system preference
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+  let newTheme;
+  if (current === "dark") {
+    newTheme = "light";
+  } else if (current === "light") {
+    newTheme = "dark";
+  } else {
+    // No explicit theme set, toggle from system preference
+    newTheme = prefersDark ? "light" : "dark";
+  }
+
+  document.documentElement.setAttribute("data-theme", newTheme);
+  localStorage.setItem("theme", newTheme);
+
+  // Re-render results to update ANSI colors
+  if (typeof renderResults === "function" && state.lastResults) {
+    renderResults(state.lastResults);
+  }
+}
+
+if (themeToggleEl) {
+  themeToggleEl.addEventListener("click", toggleTheme);
+}
+initTheme();
 
 const PY_TOKEN_RE =
   /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b|\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\b|(\b\d+(?:\.\d+)?\b)|(@[A-Za-z_]\w*)/gm;
@@ -53,7 +91,7 @@ const ANSI_OSC_RE = /\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g;
 const ANSI_CSI_RE = /\u001b\[([0-9:;?]*)([@-~])/g;
 const ANSI_ISO2022_RE = /\u001b[\(\)\*\+\-\.\/][\x30-\x7E]/g;
 const ANSI_SINGLE_ESC_RE = /\u001b[@-Z\\-_]/g;
-const ANSI_FG = [
+const ANSI_FG_LIGHT = [
   "#1f2328",
   "#b42318",
   "#18794e",
@@ -63,7 +101,7 @@ const ANSI_FG = [
   "#0e9384",
   "#667085",
 ];
-const ANSI_FG_BRIGHT = [
+const ANSI_FG_BRIGHT_LIGHT = [
   "#343a46",
   "#d92d20",
   "#12b76a",
@@ -73,6 +111,40 @@ const ANSI_FG_BRIGHT = [
   "#16b364",
   "#98a2b3",
 ];
+const ANSI_FG_DARK = [
+  "#e4e4e4",
+  "#f87171",
+  "#4ade80",
+  "#fbbf24",
+  "#60a5fa",
+  "#c084fc",
+  "#2dd4bf",
+  "#9ca3af",
+];
+const ANSI_FG_BRIGHT_DARK = [
+  "#f5f5f5",
+  "#fca5a5",
+  "#86efac",
+  "#fcd34d",
+  "#93c5fd",
+  "#d8b4fe",
+  "#5eead4",
+  "#d1d5db",
+];
+
+function getAnsiFg() {
+  const theme = document.documentElement.getAttribute("data-theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const isDark = theme === "dark" || (theme !== "light" && prefersDark);
+  return isDark ? ANSI_FG_DARK : ANSI_FG_LIGHT;
+}
+
+function getAnsiFgBright() {
+  const theme = document.documentElement.getAttribute("data-theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const isDark = theme === "dark" || (theme !== "light" && prefersDark);
+  return isDark ? ANSI_FG_BRIGHT_DARK : ANSI_FG_BRIGHT_LIGHT;
+}
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -258,22 +330,22 @@ function applyAnsiCodes(style, params) {
     }
 
     if (code >= 30 && code <= 37) {
-      next.fg = ANSI_FG[code - 30];
+      next.fg = getAnsiFg()[code - 30];
       i += 1;
       continue;
     }
     if (code >= 90 && code <= 97) {
-      next.fg = ANSI_FG_BRIGHT[code - 90];
+      next.fg = getAnsiFgBright()[code - 90];
       i += 1;
       continue;
     }
     if (code >= 40 && code <= 47) {
-      next.bg = ANSI_FG[code - 40];
+      next.bg = getAnsiFg()[code - 40];
       i += 1;
       continue;
     }
     if (code >= 100 && code <= 107) {
-      next.bg = ANSI_FG_BRIGHT[code - 100];
+      next.bg = getAnsiFgBright()[code - 100];
       i += 1;
       continue;
     }

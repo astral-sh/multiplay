@@ -827,7 +827,7 @@ def main() -> None:
         print("Skipping tool priming (--skip-prime)")
 
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)
-    print(f"Serving app on http://{args.host}:{args.port}")
+    print(f"Serving app on \033[1;4;32mhttp://{args.host}:{args.port}\033[0m")
     print(f"Static directory: {STATIC_DIR}")
     print(f"Temporary project directory: {PROJECT_DIR}")
 

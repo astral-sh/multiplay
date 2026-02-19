@@ -9,7 +9,13 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>Multi-file editor with live type checking</h1>
+      <div class="header-top">
+        <h1>Multi-file editor with live type checking</h1>
+        <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
+          <span class="theme-icon-light">&#9788;</span>
+          <span class="theme-icon-dark">&#9790;</span>
+        </button>
+      </div>
       <div class="deps-row">
         <label class="deps-label" for="dependencies">Dependencies</label>
         <textarea
