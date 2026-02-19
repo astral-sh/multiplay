@@ -85,12 +85,18 @@ INDEX_HTML = """<!doctype html>
       min-height: 100vh;
     }
     .container {
-      max-width: 1200px;
+      max-width: 1900px;
       margin: 24px auto;
       padding: 0 16px 20px;
       display: grid;
-      grid-template-rows: auto auto 1fr auto;
+      grid-template-rows: auto auto 1fr;
       gap: 12px;
+    }
+    .workspace {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      min-width: 0;
     }
     .header {
       background: var(--panel);
@@ -169,7 +175,7 @@ INDEX_HTML = """<!doctype html>
     }
     textarea {
       width: 100%;
-      min-height: 340px;
+      min-height: 420px;
       border: none;
       outline: none;
       resize: vertical;
@@ -181,9 +187,10 @@ INDEX_HTML = """<!doctype html>
       color: #18202a;
     }
     .results {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      display: flex;
+      flex-direction: column;
       gap: 12px;
+      min-width: 0;
     }
     .result-card {
       background: var(--panel);
@@ -224,10 +231,16 @@ INDEX_HTML = """<!doctype html>
       color: var(--error);
       font-weight: 600;
     }
-    @media (max-width: 980px) {
-      .results {
-        grid-template-columns: 1fr;
+    @media (min-width: 1650px) {
+      .workspace {
+        grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+        align-items: start;
       }
+      .result-card {
+        min-height: 180px;
+      }
+    }
+    @media (max-width: 980px) {
       .controls {
         margin-left: 0;
       }
@@ -254,11 +267,13 @@ INDEX_HTML = """<!doctype html>
       </div>
     </div>
 
-    <div class="editor-wrap">
-      <textarea id="editor" spellcheck="false"></textarea>
-    </div>
+    <div class="workspace">
+      <div class="editor-wrap">
+        <textarea id="editor" spellcheck="false"></textarea>
+      </div>
 
-    <div class="results" id="results"></div>
+      <div class="results" id="results"></div>
+    </div>
   </div>
 
   <script>
