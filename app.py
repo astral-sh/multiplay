@@ -66,6 +66,8 @@ STATIC_DIR = APP_ROOT / "static"
 STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
+ANALYZE_TOOL_TIMEOUT_SECONDS = 2
+PRIME_TOOL_TIMEOUT_SECONDS = 120
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -491,6 +493,7 @@ def _run_all_tools(
     project_dir: Path,
     venv_python: Path | None = None,
     enabled_tools: list[str] | None = None,
+    timeout_seconds: int = 120,
 ) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     env_overrides: dict[str, str] | None = None
@@ -514,7 +517,7 @@ def _run_all_tools(
                 tool_name,
                 command,
                 project_dir,
-                120,
+                timeout_seconds,
                 env_overrides,
             ): tool_name
             for tool_name, command in command_by_tool.items()
@@ -544,7 +547,7 @@ def _prime_tool_installs() -> tuple[dict[str, dict[str, Any]], dict[str, dict[st
             [{"name": "main.py", "content": "x: int = 1\n"}],
             keep_venv=False,
         )
-        prime_results = _run_all_tools(prime_dir)
+        prime_results = _run_all_tools(prime_dir, timeout_seconds=PRIME_TOOL_TIMEOUT_SECONDS)
         version_results = _detect_tool_versions(prime_dir)
         return prime_results, version_results
     finally:
@@ -654,7 +657,12 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
 
                 venv_python = _venv_python_path(PROJECT_DIR) if dependencies else None
-                results = _run_all_tools(PROJECT_DIR, venv_python, enabled_tools)
+                results = _run_all_tools(
+                    PROJECT_DIR,
+                    venv_python,
+                    enabled_tools,
+                    timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
+                )
 
             _json_response(
                 self,
