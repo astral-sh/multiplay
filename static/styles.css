@@ -148,6 +148,11 @@
   box-sizing: border-box;
 }
 
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-family: var(--sans);
@@ -156,15 +161,17 @@ body {
     radial-gradient(circle at 20% 15%, var(--gradient-1) 0%, transparent 40%),
     radial-gradient(circle at 80% 0%, var(--gradient-2) 0%, transparent 35%),
     var(--bg);
-  min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
 }
 
 .container {
   max-width: 1900px;
-  margin: 24px auto;
-  padding: 0 16px 20px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 16px 16px 16px;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
   gap: 12px;
 }
 
@@ -173,9 +180,21 @@ body {
   grid-template-columns: 1fr;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
 }
 
-.header {
+.header-title {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-config {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -187,13 +206,6 @@ h1 {
   margin: 0;
   font-size: 1.15rem;
   letter-spacing: 0.02em;
-}
-
-.header-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
 }
 
 .theme-toggle {
@@ -441,11 +453,15 @@ textarea {
   border-radius: 12px;
   box-shadow: var(--shadow);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .editor-shell {
   position: relative;
-  height: clamp(360px, 52vh, 760px);
+  flex: 1;
+  min-height: 200px;
   min-width: 0;
 }
 
@@ -541,6 +557,9 @@ textarea {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .result-card {
@@ -549,9 +568,11 @@ textarea {
   border-radius: 12px;
   box-shadow: var(--shadow);
   overflow: hidden;
-  min-height: 220px;
+  max-height: 320px;
   display: flex;
   flex-direction: column;
+  resize: vertical;
+  flex-shrink: 0;
 }
 
 .result-header {
@@ -642,7 +663,9 @@ textarea {
 }
 
 .result-card.collapsed {
-  min-height: 0;
+  max-height: none;
+  resize: none;
+  flex-shrink: 0;
 }
 
 .result-card.collapsed pre {
@@ -664,13 +687,46 @@ textarea {
 }
 
 @media (min-width: 1650px) {
-  .workspace {
+  .container {
+    display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-    align-items: start;
+    grid-template-rows: auto auto auto 1fr;
+    gap: 12px;
+  }
+
+  .header-title {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .header-config {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .tabs-wrap {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .workspace {
+    display: contents;
+  }
+
+  .editor-wrap {
+    grid-column: 1;
+    grid-row: 4;
+    align-self: stretch;
+  }
+
+  .results {
+    grid-column: 2;
+    grid-row: 2 / span 3;
+    align-self: stretch;
   }
 
   .result-card {
-    min-height: 180px;
+    max-height: 320px;
   }
 }
 

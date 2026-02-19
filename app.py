@@ -49,8 +49,8 @@ TOOL_SPECS = [
     ToolSpec("ty", ["uvx", "ty", "check", "."], ["uvx", "ty", "--version"]),
     ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."], ["uvx", "pyright", "--version"]),
     ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."], ["uvx", "pyrefly", "--version"]),
-    ToolSpec("mypy", ["uvx", "mypy", "--color-output", "."], ["uvx", "mypy", "--version"]),
-    ToolSpec("zuban", ["uvx", "zuban", "check", "."], ["uvx", "zuban", "--version"]),
+    ToolSpec("mypy", ["uvx", "mypy", "--color-output", "--pretty", "."], ["uvx", "mypy", "--version"]),
+    ToolSpec("zuban", ["uvx", "zuban", "check", "--pretty", "."], ["uvx", "zuban", "--version"]),
     ToolSpec(
         "pycroscope",
         ["uvx", "pycroscope", "--output-format", "concise", "."],
@@ -827,9 +827,9 @@ def main() -> None:
         print("Skipping tool priming (--skip-prime)")
 
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)
-    print(f"Serving app on \033[1;4;32mhttp://{args.host}:{args.port}\033[0m")
     print(f"Static directory: {STATIC_DIR}")
     print(f"Temporary project directory: {PROJECT_DIR}")
+    print(f"\nServing app on \033[1;4;32mhttp://{args.host}:{args.port}\033[0m")
 
     try:
         server.serve_forever()
