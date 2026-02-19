@@ -13,10 +13,12 @@ const DEFAULT_FILES = [
 
 const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycroscope"];
 let toolOrder = DEFAULT_TOOL_ORDER.slice();
+const RUFF_TY_TOOL = "ty_ruff";
 
 const state = {
   files: [],
   dependencies: [],
+  ruffRepoPath: "",
   activeIndex: 0,
   renamingIndex: -1,
   debounceMs: 500,
@@ -30,6 +32,7 @@ const state = {
 
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
+const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const highlightEl = document.getElementById("highlight");
 const editorEl = document.getElementById("editor");
 const statusEl = document.getElementById("status");
@@ -693,7 +696,35 @@ function normalizeToolList(raw) {
   return normalized;
 }
 
+function normalizeRuffRepoPath(raw) {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function toolLabel(tool) {
+  if (tool === RUFF_TY_TOOL) {
+    const checkoutPath = normalizeRuffRepoPath(state.ruffRepoPath);
+    return checkoutPath ? `ty (${checkoutPath})` : "ty (local checkout)";
+  }
+  return tool;
+}
+
+function syncRuffToolPresence() {
+  const hasRuffPath = state.ruffRepoPath.length > 0;
+  const hasRuffTool = toolOrder.includes(RUFF_TY_TOOL);
+
+  if (hasRuffPath && !hasRuffTool) {
+    const tyIndex = toolOrder.indexOf("ty");
+    const insertIndex = tyIndex >= 0 ? tyIndex + 1 : 0;
+    toolOrder.splice(insertIndex, 0, RUFF_TY_TOOL);
+  } else if (!hasRuffPath && hasRuffTool) {
+    toolOrder = toolOrder.filter((tool) => tool !== RUFF_TY_TOOL);
+    delete state.toolSettings[RUFF_TY_TOOL];
+    delete state.lastResults[RUFF_TY_TOOL];
+  }
+}
+
 function ensureToolSettings() {
+  syncRuffToolPresence();
   const next = {};
   toolOrder.forEach((tool) => {
     const existing = state.toolSettings[tool];
@@ -721,6 +752,22 @@ function updateDependenciesFromInput({ triggerAnalyze } = { triggerAnalyze: fals
     return;
   }
   state.dependencies = parsed;
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updateRuffRepoPathFromInput({ triggerAnalyze } = { triggerAnalyze: false }) {
+  const normalized = normalizeRuffRepoPath(ruffRepoPathEl.value);
+  ruffRepoPathEl.value = normalized;
+  if (normalized === state.ruffRepoPath) {
+    return;
+  }
+
+  state.ruffRepoPath = normalized;
+  ensureToolSettings();
+  renderResults(state.lastResults);
+
   if (triggerAnalyze) {
     scheduleAnalyze();
   }
@@ -836,11 +883,12 @@ function renderResults(resultByTool) {
     titleWrap.className = "result-title-wrap";
 
     const title = document.createElement("strong");
+    const displayName = toolLabel(tool);
     const version = state.toolVersions[tool];
     title.textContent =
       typeof version === "string" && version && version !== "unknown"
-        ? `${tool} v${version}`
-        : `${tool}`;
+        ? `${displayName} v${version}`
+        : `${displayName}`;
     titleWrap.appendChild(title);
 
     const right = document.createElement("div");
@@ -862,7 +910,7 @@ function renderResults(resultByTool) {
     toggleBtn.type = "button";
     toggleBtn.className = "tool-toggle " + (enabled ? "enabled" : "disabled");
     toggleBtn.textContent = enabled ? "On" : "Off";
-    toggleBtn.title = enabled ? `Turn off ${tool}` : `Turn on ${tool}`;
+    toggleBtn.title = enabled ? `Turn off ${displayName}` : `Turn on ${displayName}`;
     toggleBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -879,7 +927,7 @@ function renderResults(resultByTool) {
     collapseBtn.type = "button";
     collapseBtn.className = "tool-collapse";
     collapseBtn.textContent = collapsed ? "▼" : "▲";
-    collapseBtn.title = collapsed ? `Show ${tool} output` : `Hide ${tool} output`;
+    collapseBtn.title = collapsed ? `Show ${displayName} output` : `Hide ${displayName} output`;
     collapseBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -918,6 +966,7 @@ async function analyze() {
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     dependencies: state.dependencies.slice(),
+    ruff_repo_path: state.ruffRepoPath,
     enabled_tools: enabledTools(),
   };
 
@@ -949,6 +998,14 @@ async function analyze() {
     if (body.tool_versions && typeof body.tool_versions === "object") {
       state.toolVersions = { ...state.toolVersions, ...body.tool_versions };
     }
+    if (Array.isArray(body.tool_order) && body.tool_order.length > 0) {
+      toolOrder = normalizeToolList(body.tool_order);
+    }
+    if (typeof body.ruff_repo_path === "string") {
+      state.ruffRepoPath = normalizeRuffRepoPath(body.ruff_repo_path);
+      ruffRepoPathEl.value = state.ruffRepoPath;
+    }
+    ensureToolSettings();
     if (Array.isArray(body.enabled_tools)) {
       const enabledSet = new Set(normalizeToolList(body.enabled_tools));
       toolOrder.forEach((tool) => {
@@ -1038,6 +1095,14 @@ function bindEvents() {
   depsInputEl.addEventListener("blur", () => {
     updateDependenciesFromInput({ triggerAnalyze: true });
   });
+
+  ruffRepoPathEl.addEventListener("change", () => {
+    updateRuffRepoPathFromInput({ triggerAnalyze: true });
+  });
+
+  ruffRepoPathEl.addEventListener("blur", () => {
+    updateRuffRepoPathFromInput({ triggerAnalyze: true });
+  });
 }
 
 function loadFromBootstrap(body) {
@@ -1056,6 +1121,13 @@ function loadFromBootstrap(body) {
   } else {
     toolOrder = DEFAULT_TOOL_ORDER.slice();
   }
+
+  if (typeof body.initial_ruff_repo_path === "string") {
+    state.ruffRepoPath = normalizeRuffRepoPath(body.initial_ruff_repo_path);
+  } else {
+    state.ruffRepoPath = "";
+  }
+  ruffRepoPathEl.value = state.ruffRepoPath;
   ensureToolSettings();
 
   if (Array.isArray(body.enabled_tools)) {
@@ -1105,11 +1177,13 @@ async function bootstrap() {
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
     state.dependencies = [];
+    state.ruffRepoPath = "";
     toolOrder = DEFAULT_TOOL_ORDER.slice();
     state.toolSettings = {};
     ensureToolSettings();
     state.lastResults = {};
     depsInputEl.value = "";
+    ruffRepoPathEl.value = "";
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
 

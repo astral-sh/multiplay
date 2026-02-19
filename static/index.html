@@ -20,7 +20,18 @@
           spellcheck="false"
         ></textarea>
       </div>
+      <div class="deps-row">
+        <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
+        <input
+          id="ruff-repo-path"
+          class="deps-input"
+          type="text"
+          placeholder="/path/to/ruff"
+          spellcheck="false"
+        />
+      </div>
       <p class="status deps-note">Comma or newline separated. Installed with <code>uv add</code> in temp project.</p>
+      <p class="status deps-note">Optional Ruff path runs <code>cargo run --bin ty -- check ...</code> as an extra checker.</p>
       <div id="dep-error" class="dep-error hidden" role="alert" aria-live="polite"></div>
       <p class="status" id="status">Loading...</p>
       <p class="status" id="temp-dir"></p>

@@ -59,6 +59,7 @@ TOOL_SPECS = [
 ]
 TOOL_SPEC_BY_NAME = {spec.name: spec for spec in TOOL_SPECS}
 TOOL_ORDER = [spec.name for spec in TOOL_SPECS]
+RUFF_TY_TOOL_NAME = "ty_ruff"
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -68,6 +69,7 @@ PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 2
 PRIME_TOOL_TIMEOUT_SECONDS = 120
+LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -173,8 +175,13 @@ def _normalize_dependencies(raw: Any) -> list[str]:
 
 
 def _normalize_enabled_tools(raw: Any) -> list[str]:
+    return _normalize_enabled_tools_for_order(raw, TOOL_ORDER)
+
+
+def _normalize_enabled_tools_for_order(raw: Any, tool_order: list[str]) -> list[str]:
+    allowed = set(tool_order)
     if raw is None:
-        return list(TOOL_ORDER)
+        return list(tool_order)
 
     if not isinstance(raw, list):
         raise ValueError("enabled_tools must be a list of tool names")
@@ -186,11 +193,50 @@ def _normalize_enabled_tools(raw: Any) -> list[str]:
         name = item.strip()
         if not name:
             continue
-        if name not in TOOL_SPEC_BY_NAME:
+        if name not in allowed:
             raise ValueError(f"Unknown tool: {name!r}")
         requested.add(name)
 
-    return [tool_name for tool_name in TOOL_ORDER if tool_name in requested]
+    return [tool_name for tool_name in tool_order if tool_name in requested]
+
+
+def _normalize_ruff_repo_path(raw: Any) -> Path | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("ruff_repo_path must be a string")
+
+    text = raw.strip()
+    if not text:
+        return None
+
+    path = Path(text).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Ruff repo path does not exist: {text!r}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not resolve Ruff repo path {text!r}: {exc}") from exc
+
+    if not resolved.is_dir():
+        raise ValueError(f"Ruff repo path is not a directory: {text!r}")
+    if not (resolved / "Cargo.toml").is_file():
+        raise ValueError(f"Ruff repo path does not look like a cargo workspace: {text!r}")
+    return resolved
+
+
+def _tool_order_for_request(ruff_repo_path: Path | None) -> list[str]:
+    order = list(TOOL_ORDER)
+    if ruff_repo_path is None:
+        return order
+
+    try:
+        ty_index = order.index("ty")
+    except ValueError:
+        order.insert(0, RUFF_TY_TOOL_NAME)
+    else:
+        order.insert(ty_index + 1, RUFF_TY_TOOL_NAME)
+    return order
 
 
 def _ensure_minimal_pyproject(project_dir: Path) -> None:
@@ -294,7 +340,7 @@ def _run_command(
     name: str,
     command: list[str],
     cwd: Path,
-    timeout_seconds: int = 120,
+    timeout_seconds: int | None = 120,
     env_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -489,6 +535,40 @@ def _relativize_path(path_text: str, cwd: Path) -> str:
     return path.as_posix()
 
 
+def _venv_env_overrides(venv_python: Path | None) -> dict[str, str] | None:
+    if venv_python is None:
+        return None
+
+    venv_dir = venv_python.parent.parent
+    venv_bin = venv_python.parent
+    return {
+        "VIRTUAL_ENV": str(venv_dir),
+        "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+
+
+def _ruff_ty_command(project_dir: Path, venv_python: Path | None) -> list[str]:
+    command = ["cargo", "run", "--bin", "ty", "--", "check", "--project", str(project_dir)]
+    if venv_python is not None:
+        command.extend(["--python", str(venv_python)])
+    return command
+
+
+def _run_ruff_ty_from_repo(
+    ruff_repo_path: Path,
+    project_dir: Path,
+    venv_python: Path | None,
+    timeout_seconds: int | None,
+) -> dict[str, Any]:
+    return _run_command(
+        RUFF_TY_TOOL_NAME,
+        _ruff_ty_command(project_dir, venv_python),
+        ruff_repo_path,
+        timeout_seconds,
+        _venv_env_overrides(venv_python),
+    )
+
+
 def _run_all_tools(
     project_dir: Path,
     venv_python: Path | None = None,
@@ -496,14 +576,7 @@ def _run_all_tools(
     timeout_seconds: int = 120,
 ) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
-    env_overrides: dict[str, str] | None = None
-    if venv_python is not None:
-        venv_dir = venv_python.parent.parent
-        venv_bin = venv_python.parent
-        env_overrides = {
-            "VIRTUAL_ENV": str(venv_dir),
-            "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-        }
+    env_overrides = _venv_env_overrides(venv_python)
 
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools]
     if not selected_specs:
@@ -609,6 +682,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "initial_dependencies": DEFAULT_DEPENDENCIES,
                     "tool_order": list(TOOL_ORDER),
                     "enabled_tools": list(TOOL_ORDER),
+                    "initial_ruff_repo_path": "",
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
                 },
@@ -635,7 +709,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
             dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
-            enabled_tools = _normalize_enabled_tools(body.get("enabled_tools"))
+            ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
+            tool_order = _tool_order_for_request(ruff_repo_path)
+            enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
 
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files, keep_venv=bool(dependencies))
@@ -650,6 +726,8 @@ class AppHandler(BaseHTTPRequestHandler):
                             "dependency_install": dependency_install,
                             "dependencies": dependencies,
                             "enabled_tools": enabled_tools,
+                            "tool_order": tool_order,
+                            "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                             "tool_versions": dict(TOOL_VERSIONS),
                             "temp_dir": str(PROJECT_DIR),
                         },
@@ -657,12 +735,20 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
 
                 venv_python = _venv_python_path(PROJECT_DIR) if dependencies else None
+                base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
                 results = _run_all_tools(
                     PROJECT_DIR,
                     venv_python,
-                    enabled_tools,
+                    base_enabled_tools,
                     timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
                 )
+                if ruff_repo_path is not None and RUFF_TY_TOOL_NAME in enabled_tools:
+                    results[RUFF_TY_TOOL_NAME] = _run_ruff_ty_from_repo(
+                        ruff_repo_path,
+                        PROJECT_DIR,
+                        venv_python,
+                        LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
+                    )
 
             _json_response(
                 self,
@@ -672,6 +758,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     "tool_versions": dict(TOOL_VERSIONS),
                     "dependencies": dependencies,
                     "enabled_tools": enabled_tools,
+                    "tool_order": tool_order,
+                    "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                     "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
                 },

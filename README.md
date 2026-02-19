@@ -6,6 +6,7 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 2. Rewrite all files into a local temporary directory
 3. Run:
    - `uvx ty check .`
+   - optional: `cargo run --bin ty -- check --project <temp-project-path>` in your local Ruff clone
    - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
    - `uvx pyrefly check .`
    - `uvx mypy --color-output .`
@@ -34,6 +35,12 @@ that tool returns a timeout error while others still complete.
 Each checker card includes:
 - an `On`/`Off` toggle (disabled tools are skipped by the backend)
 - an up/down arrow to hide/show that checker's output panel
+
+Optional local Ruff `ty` checker:
+- provide a local Ruff clone path in the header input
+- this adds a `ty (/path/to/checkout)` checker card for side-by-side comparison
+- backend runs it from that repo with `cargo run --bin ty -- check --project <temp-project-path>`
+- this local-checkout run is not capped by the 2-second analyze timeout
 
 On startup, the server primes `uvx` installs for all tools so the first
 `/api/analyze` call is faster, and prints detected checker versions. The UI
