@@ -42,6 +42,31 @@ const JSON_TOKEN_RE =
   /("(?:\\.|[^"\\\n])*"\s*(?=:))|("(?:\\.|[^"\\\n])*")|(\b(?:true|false)\b)|(\bnull\b)|(\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|([{}\[\],:])/gm;
 const INI_TOKEN_RE =
   /(^\s*[;#].*$)|(^\s*\[[^\]\n]+\])|(^\s*[A-Za-z0-9_.-]+\s*(?==))|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|(\b(?:true|false|yes|no|on|off)\b)|(\b[+-]?\d+(?:\.\d+)?\b)/gim;
+const ANSI_SGR_RE = /\u001b\[([0-9;]*)m/g;
+const ANSI_OSC_RE = /\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g;
+const ANSI_CSI_RE = /\u001b\[([0-9:;?]*)([@-~])/g;
+const ANSI_ISO2022_RE = /\u001b[\(\)\*\+\-\.\/][\x30-\x7E]/g;
+const ANSI_SINGLE_ESC_RE = /\u001b[@-Z\\-_]/g;
+const ANSI_FG = [
+  "#1f2328",
+  "#b42318",
+  "#18794e",
+  "#9a6700",
+  "#155eef",
+  "#7f56d9",
+  "#0e9384",
+  "#667085",
+];
+const ANSI_FG_BRIGHT = [
+  "#343a46",
+  "#d92d20",
+  "#12b76a",
+  "#dc6803",
+  "#2970ff",
+  "#9e77ed",
+  "#16b364",
+  "#98a2b3",
+];
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -58,6 +83,260 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function xterm256Color(index) {
+  if (index < 0 || index > 255) {
+    return null;
+  }
+
+  const base = [
+    [0, 0, 0],
+    [205, 49, 49],
+    [13, 188, 121],
+    [229, 229, 16],
+    [36, 114, 200],
+    [188, 63, 188],
+    [17, 168, 205],
+    [229, 229, 229],
+    [102, 102, 102],
+    [241, 76, 76],
+    [35, 209, 139],
+    [245, 245, 67],
+    [59, 142, 234],
+    [214, 112, 214],
+    [41, 184, 219],
+    [255, 255, 255],
+  ];
+  if (index < 16) {
+    const [r, g, b] = base[index];
+    return `rgb(${r}, ${g}, ${b})`;
+  }
+  if (index < 232) {
+    const i = index - 16;
+    const r = Math.floor(i / 36);
+    const g = Math.floor((i % 36) / 6);
+    const b = i % 6;
+    const comp = [0, 95, 135, 175, 215, 255];
+    return `rgb(${comp[r]}, ${comp[g]}, ${comp[b]})`;
+  }
+  const gray = 8 + (index - 232) * 10;
+  return `rgb(${gray}, ${gray}, ${gray})`;
+}
+
+function ansiStyleToCss(style) {
+  const parts = [];
+  if (style.fg) {
+    parts.push(`color:${style.fg}`);
+  }
+  if (style.bg) {
+    parts.push(`background-color:${style.bg}`);
+  }
+  if (style.bold) {
+    parts.push("font-weight:700");
+  }
+  if (style.italic) {
+    parts.push("font-style:italic");
+  }
+  if (style.underline) {
+    parts.push("text-decoration:underline");
+  }
+  if (style.dim) {
+    parts.push("opacity:0.85");
+  }
+  return parts.join(";");
+}
+
+function sanitizeAnsiInput(raw) {
+  let cleaned = typeof raw === "string" ? raw : "";
+  cleaned = cleaned.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  cleaned = cleaned.replace(ANSI_OSC_RE, "");
+  cleaned = cleaned.replace(ANSI_CSI_RE, (full, _params, finalByte) => (finalByte === "m" ? full : ""));
+  cleaned = cleaned.replace(ANSI_ISO2022_RE, "");
+  cleaned = cleaned.replace(ANSI_SINGLE_ESC_RE, "");
+  return cleaned;
+}
+
+function applyAnsiCodes(style, params) {
+  const next = { ...style };
+  let i = 0;
+  while (i < params.length) {
+    const code = params[i];
+    if (Number.isNaN(code)) {
+      i += 1;
+      continue;
+    }
+
+    if (code === 0) {
+      next.fg = null;
+      next.bg = null;
+      next.bold = false;
+      next.dim = false;
+      next.italic = false;
+      next.underline = false;
+      i += 1;
+      continue;
+    }
+
+    if (code === 1) {
+      next.bold = true;
+      i += 1;
+      continue;
+    }
+    if (code === 2) {
+      next.dim = true;
+      i += 1;
+      continue;
+    }
+    if (code === 3) {
+      next.italic = true;
+      i += 1;
+      continue;
+    }
+    if (code === 4) {
+      next.underline = true;
+      i += 1;
+      continue;
+    }
+    if (code === 22) {
+      next.bold = false;
+      next.dim = false;
+      i += 1;
+      continue;
+    }
+    if (code === 23) {
+      next.italic = false;
+      i += 1;
+      continue;
+    }
+    if (code === 24) {
+      next.underline = false;
+      i += 1;
+      continue;
+    }
+    if (code === 39) {
+      next.fg = null;
+      i += 1;
+      continue;
+    }
+    if (code === 49) {
+      next.bg = null;
+      i += 1;
+      continue;
+    }
+
+    if (code >= 30 && code <= 37) {
+      next.fg = ANSI_FG[code - 30];
+      i += 1;
+      continue;
+    }
+    if (code >= 90 && code <= 97) {
+      next.fg = ANSI_FG_BRIGHT[code - 90];
+      i += 1;
+      continue;
+    }
+    if (code >= 40 && code <= 47) {
+      next.bg = ANSI_FG[code - 40];
+      i += 1;
+      continue;
+    }
+    if (code >= 100 && code <= 107) {
+      next.bg = ANSI_FG_BRIGHT[code - 100];
+      i += 1;
+      continue;
+    }
+
+    if (code === 38 || code === 48) {
+      const isForeground = code === 38;
+      const mode = params[i + 1];
+      if (mode === 5) {
+        const colorIndex = params[i + 2];
+        const rgb = xterm256Color(colorIndex);
+        if (rgb) {
+          if (isForeground) {
+            next.fg = rgb;
+          } else {
+            next.bg = rgb;
+          }
+        }
+        i += 3;
+        continue;
+      }
+      if (mode === 2) {
+        const r = params[i + 2];
+        const g = params[i + 3];
+        const b = params[i + 4];
+        if (![r, g, b].some((v) => Number.isNaN(v))) {
+          const rgb = `rgb(${Math.max(0, Math.min(255, r))}, ${Math.max(0, Math.min(255, g))}, ${Math.max(
+            0,
+            Math.min(255, b),
+          )})`;
+          if (isForeground) {
+            next.fg = rgb;
+          } else {
+            next.bg = rgb;
+          }
+        }
+        i += 5;
+        continue;
+      }
+    }
+
+    i += 1;
+  }
+
+  return next;
+}
+
+function ansiToHtml(text) {
+  const input = sanitizeAnsiInput(text);
+  if (!input) {
+    return escapeHtml("(no output)");
+  }
+
+  let html = "";
+  let lastIndex = 0;
+  let style = {
+    fg: null,
+    bg: null,
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: false,
+  };
+  ANSI_SGR_RE.lastIndex = 0;
+
+  function appendChunk(chunk) {
+    if (!chunk) {
+      return;
+    }
+    const escaped = escapeHtml(chunk);
+    const css = ansiStyleToCss(style);
+    html += css ? `<span style="${css}">${escaped}</span>` : escaped;
+  }
+
+  for (const match of input.matchAll(ANSI_SGR_RE)) {
+    const idx = match.index || 0;
+    if (idx > lastIndex) {
+      appendChunk(input.slice(lastIndex, idx));
+    }
+
+    const paramsText = typeof match[1] === "string" ? match[1] : "";
+    const params =
+      paramsText.length === 0
+        ? [0]
+        : paramsText
+            .split(";")
+            .map((piece) => (piece.length === 0 ? 0 : Number.parseInt(piece, 10)));
+    style = applyAnsiCodes(style, params);
+    lastIndex = idx + match[0].length;
+  }
+
+  if (lastIndex < input.length) {
+    appendChunk(input.slice(lastIndex));
+  }
+
+  return html || escapeHtml("(no output)");
 }
 
 function extensionOf(filename) {
@@ -335,8 +614,8 @@ function renderResults(resultByTool) {
     header.appendChild(meta);
 
     const pre = document.createElement("pre");
-    const output = (result.output || "").trim();
-    pre.textContent = output || "(no output)";
+    const output = typeof result.output === "string" ? result.output : "";
+    pre.innerHTML = ansiToHtml(output);
 
     card.appendChild(header);
     card.appendChild(pre);

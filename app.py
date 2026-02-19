@@ -44,7 +44,7 @@ class ToolSpec:
 
 
 TOOL_SPECS = [
-    ToolSpec("mypy", ["uvx", "mypy", "."], ["uvx", "mypy", "--version"]),
+    ToolSpec("mypy", ["uvx", "mypy", "--color-output", "."], ["uvx", "mypy", "--version"]),
     ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."], ["uvx", "pyright", "--version"]),
     ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."], ["uvx", "pyrefly", "--version"]),
     ToolSpec("ty", ["uvx", "ty", "check", "."], ["uvx", "ty", "--version"]),
@@ -55,8 +55,6 @@ APP_ROOT = Path(__file__).resolve().parent
 STATIC_DIR = APP_ROOT / "static"
 STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
-UV_CACHE_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-uv-cache-"))
-UV_TOOL_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-uv-tools-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 
 
@@ -119,8 +117,11 @@ def _write_files_to_project(project_dir: Path, files: list[dict[str, Any]]) -> N
 def _run_command(name: str, command: list[str], cwd: Path, timeout_seconds: int = 120) -> dict[str, Any]:
     started = time.perf_counter()
     env = os.environ.copy()
-    env.setdefault("UV_CACHE_DIR", str(UV_CACHE_DIR))
-    env.setdefault("UV_TOOL_DIR", str(UV_TOOL_DIR))
+    env.setdefault("TERM", "xterm-256color")
+    env.setdefault("FORCE_COLOR", "1")
+    env.setdefault("CLICOLOR_FORCE", "1")
+    env.setdefault("PY_COLORS", "1")
+    env.pop("NO_COLOR", None)
 
     try:
         completed = subprocess.run(
@@ -170,8 +171,11 @@ def _extract_version(output: str) -> str:
 def _detect_tool_versions(cwd: Path, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
     version_results: dict[str, dict[str, Any]] = {}
     env = os.environ.copy()
-    env.setdefault("UV_CACHE_DIR", str(UV_CACHE_DIR))
-    env.setdefault("UV_TOOL_DIR", str(UV_TOOL_DIR))
+    env.setdefault("TERM", "xterm-256color")
+    env.setdefault("FORCE_COLOR", "1")
+    env.setdefault("CLICOLOR_FORCE", "1")
+    env.setdefault("PY_COLORS", "1")
+    env.pop("NO_COLOR", None)
 
     for spec in TOOL_SPECS:
         started = time.perf_counter()
@@ -497,8 +501,6 @@ def main() -> None:
     finally:
         server.server_close()
         shutil.rmtree(PROJECT_DIR, ignore_errors=True)
-        shutil.rmtree(UV_CACHE_DIR, ignore_errors=True)
-        shutil.rmtree(UV_TOOL_DIR, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 1. Send all files to `/api/analyze`
 2. Rewrite all files into a local temporary directory
 3. Run:
-   - `uvx mypy .`
+   - `uvx mypy --color-output .`
    - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
    - `uvx pyrefly check .`
    - `uvx ty check .`
@@ -30,13 +30,13 @@ warmup:
 python3 /Users/carlmeyer/projects/multiplay/app.py --skip-prime
 ```
 
-We could avoid the need for this priming by using a persistent instead of
-temporary uv tool cache, but this way is more isolated. 
+Using your system uv cache/tool directories keeps startup and warm runs faster.
 
 ## Configuring
 
 Because we are simply running the type checker CLIs, you can add `ty.toml`,
 `mypy.ini`, `pyrightconfig.json` etc files and they "just work".
+Output panes preserve ANSI terminal color codes when the tool emits them.
 
 ## Project layout
 
@@ -51,4 +51,4 @@ Because we are simply running the type checker CLIs, you can add `ty.toml`,
 - `uvx` available on `PATH`
 - Network access on first run so `uvx` can fetch tool packages if not already cached
 
-The server automatically uses temporary writable directories for `uvx` cache and tool installs.
+`uvx` uses your system-default cache and tool install directories.
