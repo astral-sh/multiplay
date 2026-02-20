@@ -9,8 +9,8 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
    - optional: `cargo run --bin ty -- check --project <temp-project-path>` in your local Ruff clone
    - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
    - `uvx pyrefly check .`
-   - `uvx mypy --color-output .`
-   - `uvx zuban check .`
+   - `uvx mypy --color-output --pretty .`
+   - `uvx zuban check --pretty .`
    - `uvx pycroscope --output-format concise .`
 4. Display output from each tool in the UI
 
