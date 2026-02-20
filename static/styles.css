@@ -613,6 +613,8 @@ textarea {
 }
 
 .tool-toggle,
+.tool-configure,
+.tool-docs,
 .tool-collapse {
   border: 1px solid var(--border);
   background: var(--input-bg);
@@ -638,6 +640,8 @@ textarea {
 }
 
 .tool-toggle:hover,
+.tool-configure:hover,
+.tool-docs:hover,
 .tool-collapse:hover {
   border-color: var(--accent);
   color: var(--accent-strong);
