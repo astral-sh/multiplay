@@ -32,6 +32,34 @@ const state = {
   lastResults: {},
 };
 
+// Server-restart auto-reload: poll /api/health and reload if the server ID changes
+(function initServerReloadWatcher() {
+  let knownServerId = null;
+  const POLL_INTERVAL_MS = 2000;
+
+  async function poll() {
+    try {
+      const resp = await fetch("/api/health");
+      if (!resp.ok) return;
+      const body = await resp.json();
+      const id = body.server_id;
+      if (!id) return;
+
+      if (knownServerId === null) {
+        knownServerId = id;
+      } else if (id !== knownServerId) {
+        location.reload();
+        return;
+      }
+    } catch {
+      // Server is down — keep polling until it comes back
+    }
+    setTimeout(poll, POLL_INTERVAL_MS);
+  }
+
+  setTimeout(poll, POLL_INTERVAL_MS);
+})();
+
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");

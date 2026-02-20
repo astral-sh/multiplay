@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -64,6 +65,7 @@ RUFF_TY_TOOL_NAME = "ty_ruff"
 
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_DIR = APP_ROOT / "static"
+SERVER_ID = uuid.uuid4().hex
 STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
@@ -670,7 +672,7 @@ class AppHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
 
         if path == "/api/health":
-            _json_response(self, HTTPStatus.OK, {"ok": True, "temp_dir": str(PROJECT_DIR)})
+            _json_response(self, HTTPStatus.OK, {"ok": True, "server_id": SERVER_ID, "temp_dir": str(PROJECT_DIR)})
             return
 
         if path == "/api/bootstrap":
