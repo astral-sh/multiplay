@@ -327,7 +327,7 @@ function clearDependencyInstallError() {
 }
 
 function showDependencyInstallError(info) {
-  const command = typeof info?.command === "string" && info.command ? info.command : "uv add ...";
+  const command = typeof info?.command === "string" && info.command ? info.command : "uv pip install ...";
   const returnCode = typeof info?.returncode === "number" ? info.returncode : "?";
   const durationMs = typeof info?.duration_ms === "number" ? info.duration_ms : "?";
   const dependencies = Array.isArray(info?.dependencies)
