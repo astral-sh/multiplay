@@ -1,3 +1,44 @@
+const STORAGE_KEY = "multiplay_state";
+
+function saveState() {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        files: state.files.map((f) => ({ name: f.name, content: f.content })),
+        dependencies: state.dependencies.slice(),
+        activeIndex: state.activeIndex,
+        ruffRepoPath: state.ruffRepoPath,
+      }),
+    );
+  } catch {
+    // localStorage may be full or unavailable
+  }
+}
+
+function loadSavedState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data.files) || data.files.length === 0) return null;
+    const files = data.files
+      .filter((f) => f && typeof f.name === "string" && typeof f.content === "string")
+      .map((f) => ({ name: f.name, content: f.content }));
+    if (files.length === 0) return null;
+    return {
+      files,
+      dependencies: Array.isArray(data.dependencies)
+        ? data.dependencies.filter((d) => typeof d === "string")
+        : [],
+      activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
+      ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_FILES = [
   {
     name: "main.py",
@@ -699,6 +740,7 @@ function renderTabs() {
 
       if (state.activeIndex !== idx) {
         state.activeIndex = idx;
+        saveState();
         syncEditorFromState();
         syncActiveTabClasses();
       }
@@ -880,6 +922,7 @@ function isUniqueName(name, ignoreIndex) {
 }
 
 function scheduleAnalyze() {
+  saveState();
   if (state.debounceTimer) {
     clearTimeout(state.debounceTimer);
   }
@@ -1369,6 +1412,18 @@ async function bootstrap() {
     depsInputEl.value = "";
     ruffRepoPathEl.value = "";
     setStatus("Bootstrap failed, using defaults: " + err.message);
+  }
+
+  // Restore persisted editor state (files, dependencies, active tab) from localStorage
+  const saved = loadSavedState();
+  if (saved) {
+    state.files = saved.files;
+    state.activeIndex = Math.min(saved.activeIndex, saved.files.length - 1);
+    state.dependencies = saved.dependencies;
+    depsInputEl.value = dependenciesToText(state.dependencies);
+    state.ruffRepoPath = saved.ruffRepoPath;
+    ruffRepoPathEl.value = state.ruffRepoPath;
+    ensureToolSettings();
   }
 
   bindEvents();
