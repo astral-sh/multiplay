@@ -74,7 +74,7 @@ Output panes preserve ANSI terminal color codes when the tool emits them.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.14+
 - `uvx` available on `PATH`
 - Network access on first run so `uvx` can fetch tool packages if not already cached
 
