@@ -164,6 +164,140 @@ if (themeToggleEl) {
 }
 initTheme();
 
+const resetBtnEl = document.getElementById("reset-btn");
+if (resetBtnEl) {
+  resetBtnEl.addEventListener("click", handleReset);
+}
+
+const shareBtnEl = document.getElementById("share-btn");
+if (shareBtnEl) {
+  shareBtnEl.addEventListener("click", handleShare);
+}
+
+const gistInputEl = document.getElementById("gist-input");
+const gistLoadBtnEl = document.getElementById("gist-load-btn");
+if (gistLoadBtnEl) {
+  gistLoadBtnEl.addEventListener("click", handleLoadGist);
+}
+if (gistInputEl) {
+  gistInputEl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleLoadGist();
+    }
+  });
+}
+
+function handleReset() {
+  for (const file of state.files) {
+    if (file.name === "pyproject.toml") {
+      file.content = buildPyprojectContent();
+    } else {
+      file.content = "";
+    }
+  }
+  syncEditorFromState();
+  scheduleAnalyze();
+}
+
+async function handleShare() {
+  shareBtnEl.disabled = true;
+  shareBtnEl.textContent = "Sharing...";
+  try {
+    const resp = await fetch("/api/share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: state.files.map((f) => ({ name: f.name, content: f.content })),
+        dependencies: state.dependencies.slice(),
+      }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Share failed: " + (body.error || resp.status));
+      return;
+    }
+    const gistId = body.gist_id;
+    try {
+      await navigator.clipboard.writeText(gistId);
+      setStatus("Gist ID copied to clipboard: " + gistId);
+    } catch {
+      setStatus("Shared! Gist ID: " + gistId);
+    }
+    const gistInputEl = document.getElementById("gist-input");
+    if (gistInputEl) {
+      gistInputEl.value = gistId;
+    }
+  } catch (err) {
+    setStatus("Share error: " + err.message);
+  } finally {
+    shareBtnEl.disabled = false;
+    shareBtnEl.textContent = "Share";
+  }
+}
+
+function extractGistId(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return "";
+  // Accept full URLs like https://gist.github.com/user/abc123 or just the ID
+  const match = trimmed.match(/([a-f0-9]+)\s*$/i);
+  return match ? match[1] : trimmed;
+}
+
+async function handleLoadGist() {
+  const gistId = extractGistId(gistInputEl ? gistInputEl.value : "");
+  if (!gistId) {
+    setStatus("Enter a gist ID or URL to load");
+    return;
+  }
+
+  if (gistLoadBtnEl) {
+    gistLoadBtnEl.disabled = true;
+    gistLoadBtnEl.textContent = "Loading...";
+  }
+
+  try {
+    const resp = await fetch("/api/gist/" + encodeURIComponent(gistId));
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Load gist failed: " + (body.error || resp.status));
+      return;
+    }
+
+    const files = Array.isArray(body.files) ? body.files : [];
+    const normalizedFiles = files
+      .filter((f) => f && typeof f.name === "string" && typeof f.content === "string")
+      .map((f) => ({ name: f.name, content: f.content }));
+
+    if (normalizedFiles.length === 0) {
+      setStatus("Gist contains no loadable files");
+      return;
+    }
+
+    state.files = normalizedFiles;
+    state.activeIndex = 0;
+
+    const deps = Array.isArray(body.dependencies)
+      ? body.dependencies.filter((d) => typeof d === "string").map((d) => d.trim()).filter((d) => d.length > 0)
+      : [];
+    state.dependencies = deps;
+    depsInputEl.value = dependenciesToText(state.dependencies);
+
+    saveState();
+    renderTabs();
+    syncEditorFromState();
+    scheduleAnalyze();
+    setStatus("Loaded " + normalizedFiles.length + " file(s) from gist " + gistId);
+  } catch (err) {
+    setStatus("Load gist error: " + err.message);
+  } finally {
+    if (gistLoadBtnEl) {
+      gistLoadBtnEl.disabled = false;
+      gistLoadBtnEl.textContent = "Load";
+    }
+  }
+}
+
 const PY_TOKEN_RE =
   /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b|\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\b|(\b\d+(?:\.\d+)?\b)|(@[A-Za-z_]\w*)/gm;
 const TOML_TOKEN_RE =
