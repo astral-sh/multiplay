@@ -52,10 +52,10 @@ also shows each detected version in the checker pane header.
 ## Dependencies
 
 The header has a dependency field (comma/newline separated). When non-empty:
-- dependencies are installed in the temp project with `uv add ...`
-- all type checkers are pointed at that temp project's `.venv` interpreter
+- a `.venv` is created with `uv venv` and dependencies are installed with `uv pip install`
+- all type checkers are pointed at that `.venv` interpreter
 
-When dependency list is empty, no `uv add` is run and no `.venv` wiring is applied.
+When dependency list is empty, no venv is created and no `.venv` wiring is applied.
 If dependency install fails, the UI shows a dedicated error panel with command,
 exit code, requested dependencies, and full installer output.
 

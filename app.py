@@ -241,22 +241,6 @@ def _tool_order_for_request(ruff_repo_path: Path | None) -> list[str]:
     return order
 
 
-def _ensure_minimal_pyproject(project_dir: Path) -> None:
-    pyproject = project_dir / "pyproject.toml"
-    if pyproject.exists():
-        return
-    pyproject.write_text(
-        (
-            "[project]\n"
-            "name = \"multifile-editor-temp\"\n"
-            "version = \"0.0.0\"\n"
-            "requires-python = \">=3.10\"\n"
-            "dependencies = []\n"
-        ),
-        encoding="utf-8",
-    )
-
-
 def _venv_python_path(project_dir: Path) -> Path | None:
     candidates = [
         project_dir / ".venv" / "bin" / "python",
@@ -268,7 +252,7 @@ def _venv_python_path(project_dir: Path) -> Path | None:
     return None
 
 
-def _run_uv_add_dependencies(project_dir: Path, dependencies: list[str], timeout_seconds: int = 300) -> dict[str, Any]:
+def _run_uv_pip_install(project_dir: Path, dependencies: list[str], timeout_seconds: int = 300) -> dict[str, Any]:
     if not dependencies:
         return {
             "ran": False,
@@ -279,35 +263,82 @@ def _run_uv_add_dependencies(project_dir: Path, dependencies: list[str], timeout
             "dependencies": [],
         }
 
-    _ensure_minimal_pyproject(project_dir)
-    command = ["uv", "add", *dependencies]
+    env = _command_env()
     started = time.perf_counter()
+    output_parts: list[str] = []
+
+    # Create a venv if one doesn't already exist.
+    venv_dir = project_dir / ".venv"
+    if not venv_dir.exists():
+        venv_command = ["uv", "venv", str(venv_dir)]
+        try:
+            completed = subprocess.run(
+                venv_command,
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                env=env,
+                check=False,
+            )
+            output_parts.append((completed.stdout or "") + (completed.stderr or ""))
+            if completed.returncode != 0:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                return {
+                    "ran": True,
+                    "command": " ".join(venv_command),
+                    "returncode": completed.returncode,
+                    "duration_ms": duration_ms,
+                    "output": "".join(output_parts),
+                    "dependencies": dependencies,
+                }
+        except FileNotFoundError as exc:
+            return {
+                "ran": True,
+                "command": " ".join(venv_command),
+                "returncode": -1,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "output": f"Command not found: {exc}",
+                "dependencies": dependencies,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "ran": True,
+                "command": " ".join(venv_command),
+                "returncode": -2,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "output": f"Timed out after {timeout_seconds}s: {' '.join(venv_command)}",
+                "dependencies": dependencies,
+            }
+
+    # Install dependencies into the venv.
+    install_command = ["uv", "pip", "install", "--python", str(venv_dir / "bin" / "python"), *dependencies]
     try:
         completed = subprocess.run(
-            command,
+            install_command,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
-            env=_command_env(),
+            env=env,
             check=False,
         )
-        output = (completed.stdout or "") + (completed.stderr or "")
+        output_parts.append((completed.stdout or "") + (completed.stderr or ""))
         returncode = completed.returncode
     except FileNotFoundError as exc:
-        output = f"Command not found: {exc}"
+        output_parts.append(f"Command not found: {exc}")
         returncode = -1
     except subprocess.TimeoutExpired:
-        output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
+        output_parts.append(f"Timed out after {timeout_seconds}s: {' '.join(install_command)}")
         returncode = -2
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
         "ran": True,
-        "command": " ".join(command),
+        "command": " ".join(install_command),
         "returncode": returncode,
         "duration_ms": duration_ms,
-        "output": output,
+        "output": "".join(output_parts),
         "dependencies": dependencies,
     }
 
@@ -318,12 +349,19 @@ def _insert_flag_before_target(command: list[str], flag: str, value: str) -> lis
     return [*command, flag, value]
 
 
-def _command_for_tool(spec: ToolSpec, venv_python: Path | None) -> list[str]:
+def _command_for_tool(spec: ToolSpec, venv_python: Path | None, file_paths: list[str] | None = None) -> list[str]:
     command = list(spec.command)
+
+    # Zuban doesn't exclude .venv when scanning ".", so pass explicit files.
+    if spec.name == "zuban" and file_paths and command and command[-1] == ".":
+        py_files = [f for f in file_paths if f.endswith(".py")]
+        if py_files:
+            command = [*command[:-1], *py_files]
+
     if venv_python is None:
         return command
 
-    if spec.name == "mypy":
+    if spec.name in ("mypy", "zuban"):
         return _insert_flag_before_target(command, "--python-executable", str(venv_python))
 
     if spec.name == "pyright":
@@ -576,6 +614,7 @@ def _run_all_tools(
     venv_python: Path | None = None,
     enabled_tools: list[str] | None = None,
     timeout_seconds: int = 120,
+    file_paths: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     env_overrides = _venv_env_overrides(venv_python)
@@ -584,7 +623,7 @@ def _run_all_tools(
     if not selected_specs:
         return results
 
-    command_by_tool = {spec.name: _command_for_tool(spec, venv_python) for spec in selected_specs}
+    command_by_tool = {spec.name: _command_for_tool(spec, venv_python, file_paths) for spec in selected_specs}
     with ThreadPoolExecutor(max_workers=max(1, len(selected_specs))) as executor:
         futures = {
             executor.submit(
@@ -717,7 +756,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files, keep_venv=bool(dependencies))
-                dependency_install = _run_uv_add_dependencies(PROJECT_DIR, dependencies)
+                dependency_install = _run_uv_pip_install(PROJECT_DIR, dependencies)
                 if dependency_install["returncode"] != 0:
                     _json_response(
                         self,
@@ -738,11 +777,13 @@ class AppHandler(BaseHTTPRequestHandler):
 
                 venv_python = _venv_python_path(PROJECT_DIR) if dependencies else None
                 base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
+                file_paths = [str(entry.get("name", "")) for entry in files]
                 results = _run_all_tools(
                     PROJECT_DIR,
                     venv_python,
                     base_enabled_tools,
                     timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
+                    file_paths=file_paths,
                 )
                 if ruff_repo_path is not None and RUFF_TY_TOOL_NAME in enabled_tools:
                     results[RUFF_TY_TOOL_NAME] = _run_ruff_ty_from_repo(
