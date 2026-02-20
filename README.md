@@ -49,6 +49,18 @@ On startup, the server primes `uvx` installs for all tools so the first
 `/api/analyze` call is faster, and prints detected checker versions. The UI
 also shows each detected version in the checker pane header.
 
+## Sharing
+
+Click the **Share** button in the header to create a public GitHub Gist containing your
+current files and dependencies. The gist ID is copied to your clipboard.
+
+To load a shared gist, paste the gist ID (or full URL) into the **Gist ID or URL** input
+in the header and click **Load**. This replaces the current files and dependencies with
+the contents of the gist.
+
+Sharing requires the [`gh` CLI](https://cli.github.com) installed and authenticated (`gh auth login`).
+Loading gists only requires network access (no `gh` CLI needed).
+
 ## Dependencies
 
 The header has a dependency field (comma/newline separated). When non-empty:
@@ -76,6 +88,7 @@ Output panes preserve ANSI terminal color codes when the tool emits them.
 
 - Python 3.14+
 - `uvx` available on `PATH`
+- `gh` CLI (optional, for sharing gists — install from https://cli.github.com)
 - Network access on first run so `uvx` can fetch tool packages if not already cached
 
 `uvx` uses your system-default cache and tool install directories.

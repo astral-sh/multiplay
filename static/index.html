@@ -10,10 +10,18 @@
   <div class="container">
     <div class="header-title">
       <h1>Multi-file editor with live type checking</h1>
-      <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
-        <span class="theme-icon-light">&#9788;</span>
-        <span class="theme-icon-dark">&#9790;</span>
-      </button>
+      <div class="header-actions">
+        <button id="reset-btn" class="header-btn" title="Clear all file contents" aria-label="Reset file contents">Reset</button>
+        <button id="share-btn" class="header-btn" title="Share as GitHub Gist" aria-label="Share as GitHub Gist">Share</button>
+        <div class="gist-load-group">
+          <input id="gist-input" class="gist-input" type="text" placeholder="Gist ID or URL" spellcheck="false" aria-label="Gist ID or URL" />
+          <button id="gist-load-btn" class="header-btn" title="Load files from a GitHub Gist" aria-label="Load gist">Load</button>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
+          <span class="theme-icon-light">&#9788;</span>
+          <span class="theme-icon-dark">&#9790;</span>
+        </button>
+      </div>
     </div>
 
     <div class="header-config">

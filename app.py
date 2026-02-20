@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -701,6 +702,79 @@ def _content_type_for(path: Path) -> str:
     return guessed
 
 
+def _fetch_gist(gist_id: str) -> dict[str, Any]:
+    url = f"https://api.github.com/gists/{gist_id}"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Failed to fetch gist {gist_id}: HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to fetch gist {gist_id}: {exc.reason}") from exc
+
+    raw_files = data.get("files", {})
+    metadata: dict[str, Any] = {}
+    files: list[dict[str, str]] = []
+    for filename, info in raw_files.items():
+        content = info.get("content", "")
+        if filename == "_multiplay_metadata.json":
+            try:
+                metadata = json.loads(content)
+            except json.JSONDecodeError:
+                pass
+            continue
+        files.append({"name": filename, "content": content})
+
+    dependencies = metadata.get("dependencies", [])
+    if not isinstance(dependencies, list):
+        dependencies = []
+
+    return {"files": files, "dependencies": dependencies}
+
+
+def _create_gist(files: list[dict[str, Any]], dependencies: list[str]) -> dict[str, str]:
+    tmp = Path(tempfile.mkdtemp(prefix="multiplay-gist-"))
+    try:
+        paths: list[str] = []
+        for entry in files:
+            name = str(entry.get("name", ""))
+            content = entry.get("content", "")
+            rel = _safe_relative_path(name)
+            dest = tmp / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+            paths.append(str(dest))
+
+        metadata_path = tmp / "_multiplay_metadata.json"
+        metadata_path.write_text(json.dumps({"dependencies": dependencies}), encoding="utf-8")
+        paths.append(str(metadata_path))
+
+        result = subprocess.run(
+            ["gh", "gist", "create", "--public", *paths],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            raise RuntimeError(f"gh gist create failed (exit {result.returncode}): {stderr}")
+
+        gist_url = result.stdout.strip()
+        if not gist_url:
+            raise RuntimeError("gh gist create returned no URL")
+
+        gist_id = gist_url.rstrip("/").rsplit("/", 1)[-1]
+        return {"gist_url": gist_url, "gist_id": gist_id}
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "gh CLI not found. Install it (https://cli.github.com) and run `gh auth login`."
+        ) from exc
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "MultifileEditor/2.0"
 
@@ -730,6 +804,18 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path.startswith("/api/gist/"):
+            gist_id = path[len("/api/gist/"):]
+            if not gist_id:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing gist ID"})
+                return
+            try:
+                result = _fetch_gist(gist_id)
+                _json_response(self, HTTPStatus.OK, result)
+            except RuntimeError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
         static_file = _resolve_static_file(path)
         if static_file is not None:
             data = static_file.read_bytes()
@@ -740,6 +826,11 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+
+        if path == "/api/share":
+            self._handle_share()
+            return
+
         if path != "/api/analyze":
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -811,6 +902,24 @@ class AppHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except json.JSONDecodeError:
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON payload"})
+        except Exception as exc:  # pragma: no cover
+            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Unexpected error: {exc}"})
+
+    def _handle_share(self) -> None:
+        try:
+            body = self._read_json_body()
+            files = body.get("files")
+            if not isinstance(files, list) or not files:
+                raise ValueError("Expected non-empty 'files' list")
+            dependencies = _normalize_dependencies(body.get("dependencies"))
+            result = _create_gist(files, dependencies)
+            _json_response(self, HTTPStatus.OK, result)
+        except ValueError as exc:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except json.JSONDecodeError:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON payload"})
+        except RuntimeError as exc:
+            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
         except Exception as exc:  # pragma: no cover
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Unexpected error: {exc}"})
 
