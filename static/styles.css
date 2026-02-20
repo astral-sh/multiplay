@@ -701,6 +701,11 @@ textarea {
   cursor: grabbing;
 }
 
+.result-header strong,
+.result-header .meta {
+  cursor: text;
+}
+
 .drag-grip {
   color: var(--muted);
   font-size: 1.15rem;

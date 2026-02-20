@@ -943,7 +943,6 @@ function renderResults(resultByTool) {
 
     const card = document.createElement("section");
     card.className = "result-card";
-    card.draggable = true;
     card.dataset.tool = tool;
     if (!enabled) {
       card.classList.add("tool-disabled");
@@ -951,20 +950,6 @@ function renderResults(resultByTool) {
     if (collapsed) {
       card.classList.add("collapsed");
     }
-
-    card.addEventListener("dragstart", (event) => {
-      draggedTool = tool;
-      card.classList.add("dragging");
-      event.dataTransfer.effectAllowed = "move";
-    });
-
-    card.addEventListener("dragend", () => {
-      draggedTool = null;
-      card.classList.remove("dragging");
-      resultsEl.querySelectorAll(".result-card").forEach((c) => {
-        c.classList.remove("drag-over-above", "drag-over-below");
-      });
-    });
 
     card.addEventListener("dragover", (event) => {
       if (draggedTool === null || draggedTool === tool) {
@@ -1007,6 +992,32 @@ function renderResults(resultByTool) {
 
     const header = document.createElement("div");
     header.className = "result-header";
+    header.draggable = true;
+
+    header.addEventListener("mouseover", (event) => {
+      const overText =
+        event.target !== header &&
+        event.target !== grip &&
+        !event.target.classList.contains("result-header");
+      header.draggable = !overText;
+    });
+    header.addEventListener("mouseout", () => {
+      header.draggable = true;
+    });
+
+    header.addEventListener("dragstart", (event) => {
+      draggedTool = tool;
+      card.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+    });
+
+    header.addEventListener("dragend", () => {
+      draggedTool = null;
+      card.classList.remove("dragging");
+      resultsEl.querySelectorAll(".result-card").forEach((c) => {
+        c.classList.remove("drag-over-above", "drag-over-below");
+      });
+    });
 
     const grip = document.createElement("span");
     grip.className = "drag-grip";
