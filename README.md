@@ -34,7 +34,10 @@ that tool returns a timeout error while others still complete.
 
 Each checker card includes:
 - an `On`/`Off` toggle (disabled tools are skipped by the backend)
-- an up/down arrow to hide/show that checker's output panel
+- a `Configure` button to open/create the tool's config section in `pyproject.toml`
+- a `Docs` button linking to the tool's configuration documentation
+- a collapse/expand arrow to hide/show that checker's output panel
+- a drag grip for reordering panels
 
 Optional local Ruff `ty` checker:
 - provide a local Ruff clone path in the header input
