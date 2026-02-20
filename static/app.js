@@ -56,6 +56,21 @@ const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycros
 let toolOrder = DEFAULT_TOOL_ORDER.slice();
 const RUFF_TY_TOOL = "ty_ruff";
 
+function toolConfigSection(tool) {
+  const name = tool === RUFF_TY_TOOL ? "ty" : tool;
+  return `[tool.${name}]`;
+}
+
+const TOOL_DOCS_URL = {
+  ty: "https://docs.astral.sh/ty/reference/configuration/",
+  ty_ruff: "https://docs.astral.sh/ty/reference/configuration/",
+  pyright: "https://microsoft.github.io/pyright/#/configuration",
+  pyrefly: "https://pyrefly.org/en/docs/configuration/",
+  mypy: "https://mypy.readthedocs.io/en/stable/config_file.html",
+  zuban: "https://docs.zubanls.com/en/latest/usage.html#configuration",
+  pycroscope: "https://github.com/JelleZijlstra/pycroscope/blob/main/docs/configuration.md",
+};
+
 let draggedTool = null;
 
 const state = {
@@ -1155,8 +1170,44 @@ function renderResults(resultByTool) {
       renderResults(state.lastResults);
     });
 
+    const configSection = toolConfigSection(tool);
+    let configureBtn = null;
+    if (configSection) {
+      configureBtn = document.createElement("button");
+      configureBtn.type = "button";
+      configureBtn.className = "tool-configure";
+      configureBtn.textContent = "Configure";
+      configureBtn.title = `Open ${configSection} in pyproject.toml`;
+      configureBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openConfigFile(tool);
+      });
+    }
+
+    const docsUrl = TOOL_DOCS_URL[tool];
+    let docsBtn = null;
+    if (docsUrl) {
+      docsBtn = document.createElement("button");
+      docsBtn.type = "button";
+      docsBtn.className = "tool-docs";
+      docsBtn.textContent = "Docs";
+      docsBtn.title = `Open ${displayName} configuration docs`;
+      docsBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        window.open(docsUrl, "_blank", "noopener");
+      });
+    }
+
     right.appendChild(meta);
     right.appendChild(toggleBtn);
+    if (configureBtn) {
+      right.appendChild(configureBtn);
+    }
+    if (docsBtn) {
+      right.appendChild(docsBtn);
+    }
     right.appendChild(collapseBtn);
     header.appendChild(titleWrap);
     header.appendChild(right);
@@ -1258,6 +1309,53 @@ async function analyze() {
     clearDependencyInstallError();
     setStatus("Error: " + err.message);
   }
+}
+
+function buildPyprojectContent() {
+  const seen = new Set();
+  const sections = [];
+  for (const name of toolOrder) {
+    const header = toolConfigSection(name);
+    if (!seen.has(header)) {
+      seen.add(header);
+      sections.push(header);
+    }
+  }
+  return sections.join("\n\n\n") + "\n";
+}
+
+function openConfigFile(tool) {
+  const section = toolConfigSection(tool);
+  if (!section) return;
+
+  if (state.renamingIndex >= 0) {
+    cancelTabRename();
+  }
+
+  const existingIndex = state.files.findIndex((f) => f.name === "pyproject.toml");
+  if (existingIndex >= 0) {
+    state.activeIndex = existingIndex;
+  } else {
+    state.files.push({ name: "pyproject.toml", content: buildPyprojectContent() });
+    state.activeIndex = state.files.length - 1;
+  }
+
+  renderTabs();
+  syncEditorFromState();
+
+  // Place the cursor at the end of the [tool.<name>] header line.
+  const content = editorEl.value;
+  const sectionIndex = content.indexOf(section);
+  if (sectionIndex >= 0) {
+    let cursorPos = sectionIndex + section.length;
+    if (content[cursorPos] === "\n") cursorPos++;
+    editorEl.focus();
+    editorEl.setSelectionRange(cursorPos, cursorPos);
+  } else {
+    editorEl.focus();
+  }
+
+  scheduleAnalyze();
 }
 
 function addFile() {
