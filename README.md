@@ -17,7 +17,7 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 ## Run
 
 ```bash
-uv run app.py
+uv run multiplay
 ```
 
 Then open:
