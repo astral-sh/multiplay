@@ -55,6 +55,7 @@ const DEFAULT_FILES = [
 const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycroscope"];
 let toolOrder = DEFAULT_TOOL_ORDER.slice();
 const RUFF_TY_TOOL = "ty_ruff";
+const PYTHON_LOCAL_TOOLS = ["mypy", "pycroscope"];
 
 function toolConfigSection(tool) {
   const name = tool === RUFF_TY_TOOL ? "ty" : tool;
@@ -77,6 +78,7 @@ const state = {
   files: [],
   dependencies: [],
   ruffRepoPath: "",
+  pythonToolRepoPaths: {},
   activeIndex: 0,
   renamingIndex: -1,
   debounceMs: 500,
@@ -119,6 +121,8 @@ const state = {
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
+const mypyRepoPathEl = document.getElementById("mypy-repo-path");
+const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
 const highlightEl = document.getElementById("highlight");
 const editorEl = document.getElementById("editor");
 const statusEl = document.getElementById("status");
@@ -993,10 +997,49 @@ function normalizeRuffRepoPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
 
+function normalizePythonToolRepoPath(raw) {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function normalizePythonToolRepoPaths(raw) {
+  const normalized = {};
+  if (!raw || typeof raw !== "object") {
+    return normalized;
+  }
+
+  PYTHON_LOCAL_TOOLS.forEach((tool) => {
+    const value = normalizePythonToolRepoPath(raw[tool]);
+    if (value) {
+      normalized[tool] = value;
+    }
+  });
+  return normalized;
+}
+
+function pythonToolRepoPathForTool(tool) {
+  const value = state.pythonToolRepoPaths[tool];
+  return typeof value === "string" ? value : "";
+}
+
+function pythonToolRepoPathsPayload() {
+  const payload = {};
+  PYTHON_LOCAL_TOOLS.forEach((tool) => {
+    const value = pythonToolRepoPathForTool(tool);
+    if (value) {
+      payload[tool] = value;
+    }
+  });
+  return payload;
+}
+
 function toolLabel(tool) {
   if (tool === RUFF_TY_TOOL) {
     const checkoutPath = normalizeRuffRepoPath(state.ruffRepoPath);
     return checkoutPath ? `ty (${checkoutPath})` : "ty (local checkout)";
+  }
+  const localPythonToolPath = pythonToolRepoPathForTool(tool);
+  if (localPythonToolPath) {
+    return `${tool} (${localPythonToolPath})`;
   }
   return tool;
 }
@@ -1059,6 +1102,27 @@ function updateRuffRepoPathFromInput({ triggerAnalyze } = { triggerAnalyze: fals
 
   state.ruffRepoPath = normalized;
   ensureToolSettings();
+  renderResults(state.lastResults);
+
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updatePythonToolRepoPathFromInput(tool, inputEl, { triggerAnalyze } = { triggerAnalyze: false }) {
+  const normalized = normalizePythonToolRepoPath(inputEl.value);
+  inputEl.value = normalized;
+
+  const previous = pythonToolRepoPathForTool(tool);
+  if (normalized === previous) {
+    return;
+  }
+
+  if (normalized) {
+    state.pythonToolRepoPaths[tool] = normalized;
+  } else {
+    delete state.pythonToolRepoPaths[tool];
+  }
   renderResults(state.lastResults);
 
   if (triggerAnalyze) {
@@ -1249,7 +1313,8 @@ function renderResults(resultByTool) {
 
     const title = document.createElement("strong");
     const displayName = toolLabel(tool);
-    const version = state.toolVersions[tool];
+    const localPythonToolPath = pythonToolRepoPathForTool(tool);
+    const version = localPythonToolPath ? "" : state.toolVersions[tool];
     title.textContent =
       typeof version === "string" && version && version !== "unknown"
         ? `${displayName} v${version}`
@@ -1368,6 +1433,7 @@ async function analyze() {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     dependencies: state.dependencies.slice(),
     ruff_repo_path: state.ruffRepoPath,
+    python_tool_repo_paths: pythonToolRepoPathsPayload(),
     enabled_tools: enabledTools(),
   };
 
@@ -1416,6 +1482,11 @@ async function analyze() {
     if (typeof body.ruff_repo_path === "string") {
       state.ruffRepoPath = normalizeRuffRepoPath(body.ruff_repo_path);
       ruffRepoPathEl.value = state.ruffRepoPath;
+    }
+    if (body.python_tool_repo_paths && typeof body.python_tool_repo_paths === "object") {
+      state.pythonToolRepoPaths = normalizePythonToolRepoPaths(body.python_tool_repo_paths);
+      mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
+      pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
     }
     ensureToolSettings();
     if (Array.isArray(body.enabled_tools)) {
@@ -1562,6 +1633,22 @@ function bindEvents() {
   ruffRepoPathEl.addEventListener("blur", () => {
     updateRuffRepoPathFromInput({ triggerAnalyze: true });
   });
+
+  mypyRepoPathEl.addEventListener("change", () => {
+    updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true });
+  });
+
+  mypyRepoPathEl.addEventListener("blur", () => {
+    updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true });
+  });
+
+  pycroscopeRepoPathEl.addEventListener("change", () => {
+    updatePythonToolRepoPathFromInput("pycroscope", pycroscopeRepoPathEl, { triggerAnalyze: true });
+  });
+
+  pycroscopeRepoPathEl.addEventListener("blur", () => {
+    updatePythonToolRepoPathFromInput("pycroscope", pycroscopeRepoPathEl, { triggerAnalyze: true });
+  });
 }
 
 function loadFromBootstrap(body) {
@@ -1586,7 +1673,14 @@ function loadFromBootstrap(body) {
   } else {
     state.ruffRepoPath = "";
   }
+  if (body.initial_python_tool_repo_paths && typeof body.initial_python_tool_repo_paths === "object") {
+    state.pythonToolRepoPaths = normalizePythonToolRepoPaths(body.initial_python_tool_repo_paths);
+  } else {
+    state.pythonToolRepoPaths = {};
+  }
   ruffRepoPathEl.value = state.ruffRepoPath;
+  mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
+  pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
   ensureToolSettings();
 
   if (Array.isArray(body.enabled_tools)) {
@@ -1637,12 +1731,15 @@ async function bootstrap() {
     state.files = DEFAULT_FILES.slice();
     state.dependencies = [];
     state.ruffRepoPath = "";
+    state.pythonToolRepoPaths = {};
     toolOrder = DEFAULT_TOOL_ORDER.slice();
     state.toolSettings = {};
     ensureToolSettings();
     state.lastResults = {};
     depsInputEl.value = "";
     ruffRepoPathEl.value = "";
+    mypyRepoPathEl.value = "";
+    pycroscopeRepoPathEl.value = "";
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
 

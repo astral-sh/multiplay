@@ -36,17 +36,44 @@
         ></textarea>
       </div>
       <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
-      <div class="deps-row">
-        <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
-        <input
-          id="ruff-repo-path"
-          class="deps-input"
-          type="text"
-          placeholder="/path/to/ruff"
-          spellcheck="false"
-        />
-      </div>
-      <p class="status deps-note">Optional Ruff path runs <code>cargo run --bin ty -- check ...</code> as an extra checker.</p>
+      <details class="advanced-config">
+        <summary>Local checker directories (optional)</summary>
+        <div class="advanced-config-body">
+          <div class="deps-row">
+            <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
+            <input
+              id="ruff-repo-path"
+              class="deps-input"
+              type="text"
+              placeholder="/path/to/ruff"
+              spellcheck="false"
+            />
+          </div>
+          <p class="status deps-note">Runs <code>cargo run --bin ty -- check ...</code> as an extra checker.</p>
+          <div class="deps-row">
+            <label class="deps-label" for="mypy-repo-path">Local mypy checkout</label>
+            <input
+              id="mypy-repo-path"
+              class="deps-input"
+              type="text"
+              placeholder="/path/to/mypy"
+              spellcheck="false"
+            />
+          </div>
+          <p class="status deps-note">Runs <code>uv run --with-editable 'mypy @ &lt;dir&gt;' mypy ...</code> for the mypy checker.</p>
+          <div class="deps-row">
+            <label class="deps-label" for="pycroscope-repo-path">Local pycroscope checkout</label>
+            <input
+              id="pycroscope-repo-path"
+              class="deps-input"
+              type="text"
+              placeholder="/path/to/pycroscope"
+              spellcheck="false"
+            />
+          </div>
+          <p class="status deps-note">Runs <code>uv run --with-editable 'pycroscope @ &lt;dir&gt;' pycroscope ...</code> for the pycroscope checker.</p>
+        </div>
+      </details>
       <div id="dep-error" class="dep-error hidden" role="alert" aria-live="polite"></div>
       <p class="status" id="status">Loading...</p>
       <p class="status" id="temp-dir"></p>
