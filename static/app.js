@@ -1761,4 +1761,21 @@ async function bootstrap() {
   analyze();
 }
 
+// Reset editor-wrap inline height when crossing the 980px breakpoint so CSS
+// media-query defaults take effect cleanly after a user resize.
+(function initEditorBreakpointReset() {
+  const mql = window.matchMedia("(max-width: 980px)");
+  const editorWrap = document.querySelector(".editor-wrap");
+
+  mql.addEventListener("change", (e) => {
+    if (e.matches) {
+      // Entered small-screen mode: shrink to CSS min-height (120px)
+      editorWrap.style.height = "120px";
+    } else {
+      // Entered medium/large-screen mode: clear inline height so grid stretch applies
+      editorWrap.style.height = "";
+    }
+  });
+})();
+
 bootstrap();
