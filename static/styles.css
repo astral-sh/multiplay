@@ -816,7 +816,7 @@ textarea {
   font-weight: 600;
 }
 
-@media (min-width: 1650px) {
+@media (min-width: 981px) {
   .container {
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
@@ -857,39 +857,6 @@ textarea {
 
   .result-card {
     max-height: 320px;
-  }
-}
-
-@media (min-width: 981px) and (max-width: 1649px) {
-  .container {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .header-title {
-    grid-column: 1 / -1;
-  }
-
-  .header-config {
-    grid-column: 1 / -1;
-  }
-
-  .tabs-wrap {
-    grid-column: 1;
-    grid-row: 3;
-  }
-
-  .workspace {
-    display: contents;
-  }
-
-  .editor-wrap {
-    grid-column: 1;
-    grid-row: 4;
-  }
-
-  .results {
-    grid-column: 2;
-    grid-row: 3 / span 2;
   }
 }
 
