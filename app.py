@@ -416,8 +416,8 @@ def _command_for_tool(
         else list(spec.command)
     )
 
-    # Zuban doesn't exclude .venv when scanning ".", so pass explicit files.
-    if spec.name == "zuban" and file_paths and command and command[-1] == ".":
+    # Zuban and pycroscope don't exclude .venv when scanning ".", so pass explicit files.
+    if spec.name in ("zuban", "pycroscope") and file_paths and command and command[-1] == ".":
         py_files = [f for f in file_paths if f.endswith(".py")]
         if py_files:
             command = [*command[:-1], *py_files]
@@ -425,17 +425,17 @@ def _command_for_tool(
     if venv_python is None:
         return command
 
-    if spec.name in ("mypy", "zuban"):
-        return _insert_flag_before_target(command, "--python-executable", str(venv_python))
-
-    if spec.name == "pyright":
-        return _insert_flag_before_target(command, "--pythonpath", str(venv_python))
-
-    if spec.name == "pyrefly":
-        return _insert_flag_before_target(command, "--python-interpreter-path", str(venv_python))
-
-    if spec.name == "ty":
-        return _insert_flag_before_target(command, "--python", str(venv_python))
+    # When a venv exists, tools are installed into it directly. Replace the
+    # "uvx <tool>" prefix with "venv_python -m <tool>" so the tool runs with
+    # the correct interpreter and can resolve imports from installed packages
+    # without per-tool flags like --python-executable, --pythonpath, etc.
+    if repo_path is None and len(command) >= 2 and command[0] == "uvx":
+        if spec.name == "zuban":
+            # zuban doesn't support "python -m zuban"; run the bin entry point
+            # with --python-executable so it knows where to find dependencies.
+            command = [command[1], *command[2:]]
+            return _insert_flag_before_target(command, "--python-executable", str(venv_python))
+        command = [str(venv_python), "-m", command[1], *command[2:]]
 
     return command
 
@@ -451,15 +451,6 @@ def _run_command(
     env = _command_env()
     if env_overrides:
         env.update(env_overrides)
-    if name == "pycroscope":
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        project_path = str(cwd)
-        env["PYTHONPATH"] = (
-            f"{project_path}{os.pathsep}{existing_pythonpath}"
-            if existing_pythonpath
-            else project_path
-        )
-
     try:
         completed = subprocess.run(
             command,
@@ -916,7 +907,18 @@ class AppHandler(BaseHTTPRequestHandler):
 
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files, keep_venv=bool(dependencies))
-                dependency_install = _run_uv_pip_install(PROJECT_DIR, dependencies)
+                # Install tools into the venv alongside user deps so they can
+                # resolve imports from installed packages without per-tool flags.
+                install_deps = dependencies
+                if dependencies:
+                    tool_packages = [
+                        spec.name for spec in TOOL_SPECS
+                        if spec.name in (enabled_tools or [])
+                        and spec.name not in (python_tool_repo_paths or {})
+                    ]
+                    if tool_packages:
+                        install_deps = [*dependencies, *tool_packages]
+                dependency_install = _run_uv_pip_install(PROJECT_DIR, install_deps)
                 if dependency_install["returncode"] != 0:
                     _json_response(
                         self,
