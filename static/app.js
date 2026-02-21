@@ -69,7 +69,7 @@ const TOOL_DOCS_URL = {
   pyrefly: "https://pyrefly.org/en/docs/configuration/",
   mypy: "https://mypy.readthedocs.io/en/stable/config_file.html",
   zuban: "https://docs.zubanls.com/en/latest/usage.html#configuration",
-  pycroscope: "https://github.com/JelleZijlstra/pycroscope/blob/main/docs/configuration.md",
+  pycroscope: "https://pycroscope.readthedocs.io/en/latest/configuration.html",
 };
 
 let draggedTool = null;
