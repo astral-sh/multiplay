@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -48,15 +49,15 @@ class ToolSpec:
 
 
 TOOL_SPECS = [
-    ToolSpec("ty", ["uvx", "ty", "check", "."], ["uvx", "ty", "--version"]),
-    ToolSpec("pyright", ["uvx", "pyright", "--outputjson", "."], ["uvx", "pyright", "--version"]),
-    ToolSpec("pyrefly", ["uvx", "pyrefly", "check", "."], ["uvx", "pyrefly", "--version"]),
-    ToolSpec("mypy", ["uvx", "mypy", "--color-output", "--pretty", "."], ["uvx", "mypy", "--version"]),
-    ToolSpec("zuban", ["uvx", "zuban", "check", "--pretty", "."], ["uvx", "zuban", "--version"]),
+    ToolSpec("ty", ["ty", "check", "."], ["ty", "--version"]),
+    ToolSpec("pyright", ["pyright", "--outputjson", "."], ["pyright", "--version"]),
+    ToolSpec("pyrefly", ["pyrefly", "check", "."], ["pyrefly", "--version"]),
+    ToolSpec("mypy", ["mypy", "--color-output", "--pretty", "."], ["mypy", "--version"]),
+    ToolSpec("zuban", ["zuban", "check", "--pretty", "."], ["zuban", "--version"]),
     ToolSpec(
         "pycroscope",
-        ["uvx", "pycroscope", "--output-format", "concise", "."],
-        ["uvx", "--from", "pycroscope", "python", "-c", "import importlib.metadata as m; print(m.version('pycroscope'))"],
+        ["pycroscope", "--output-format", "concise", "."],
+        ["python", "-c", "import importlib.metadata as m; print(m.version('pycroscope'))"],
     ),
 ]
 TOOL_SPEC_BY_NAME = {spec.name: spec for spec in TOOL_SPECS}
@@ -72,7 +73,6 @@ STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 2
-PRIME_TOOL_TIMEOUT_SECONDS = 120
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
 
 
@@ -397,10 +397,10 @@ def _insert_flag_before_target(command: list[str], flag: str, value: str) -> lis
 
 
 def _command_for_local_python_tool(spec: ToolSpec, repo_path: Path) -> list[str]:
-    if len(spec.command) < 2:
+    if not spec.command:
         return list(spec.command)
     requirement = f"{spec.name} @ {repo_path}"
-    return ["uv", "run", "--with-editable", requirement, spec.command[1], *spec.command[2:]]
+    return ["uv", "run", "--with-editable", requirement, spec.command[0], *spec.command[1:]]
 
 
 def _command_for_tool(
@@ -416,8 +416,8 @@ def _command_for_tool(
         else list(spec.command)
     )
 
-    # Zuban doesn't exclude .venv when scanning ".", so pass explicit files.
-    if spec.name == "zuban" and file_paths and command and command[-1] == ".":
+    # Zuban and pycroscope don't exclude .venv when scanning ".", so pass explicit files.
+    if spec.name in ("zuban", "pycroscope") and file_paths and command and command[-1] == ".":
         py_files = [f for f in file_paths if f.endswith(".py")]
         if py_files:
             command = [*command[:-1], *py_files]
@@ -425,17 +425,14 @@ def _command_for_tool(
     if venv_python is None:
         return command
 
-    if spec.name in ("mypy", "zuban"):
-        return _insert_flag_before_target(command, "--python-executable", str(venv_python))
-
-    if spec.name == "pyright":
-        return _insert_flag_before_target(command, "--pythonpath", str(venv_python))
-
-    if spec.name == "pyrefly":
-        return _insert_flag_before_target(command, "--python-interpreter-path", str(venv_python))
-
-    if spec.name == "ty":
-        return _insert_flag_before_target(command, "--python", str(venv_python))
+    # Tools are installed into the venv. Run them with the venv's Python via
+    # "python -m <tool>" so they can resolve imports from installed packages.
+    if repo_path is None and command:
+        if spec.name == "zuban":
+            # zuban doesn't support "python -m zuban"; run the bin entry point
+            # with --python-executable so it knows where to find dependencies.
+            return _insert_flag_before_target(command, "--python-executable", str(venv_python))
+        command = [str(venv_python), "-m", command[0], *command[1:]]
 
     return command
 
@@ -451,15 +448,6 @@ def _run_command(
     env = _command_env()
     if env_overrides:
         env.update(env_overrides)
-    if name == "pycroscope":
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        project_path = str(cwd)
-        env["PYTHONPATH"] = (
-            f"{project_path}{os.pathsep}{existing_pythonpath}"
-            if existing_pythonpath
-            else project_path
-        )
-
     try:
         completed = subprocess.run(
             command,
@@ -505,9 +493,12 @@ def _extract_version(output: str) -> str:
     return "unknown"
 
 
-def _detect_tool_versions(cwd: Path, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
+def _detect_tool_versions(cwd: Path, venv_python: Path | None = None, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
     version_results: dict[str, dict[str, Any]] = {}
     env = _command_env()
+    overrides = _venv_env_overrides(venv_python)
+    if overrides:
+        env.update(overrides)
 
     for spec in TOOL_SPECS:
         started = time.perf_counter()
@@ -720,20 +711,12 @@ def _run_all_tools(
     return results
 
 
-def _prime_tool_installs() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Warm uvx tool installs and collect tool versions."""
-    prime_dir = Path(tempfile.mkdtemp(prefix="multifile-editor-prime-"))
-    try:
-        _write_files_to_project(
-            prime_dir,
-            [{"name": "main.py", "content": "x: int = 1\n"}],
-            keep_venv=False,
-        )
-        prime_results = _run_all_tools(prime_dir, timeout_seconds=PRIME_TOOL_TIMEOUT_SECONDS)
-        version_results = _detect_tool_versions(prime_dir)
-        return prime_results, version_results
-    finally:
-        shutil.rmtree(prime_dir, ignore_errors=True)
+def _prime_tool_installs() -> dict[str, dict[str, Any]]:
+    """Install all tools into a venv in PROJECT_DIR and detect versions."""
+    tool_packages = [spec.name for spec in TOOL_SPECS]
+    _run_uv_pip_install(PROJECT_DIR, tool_packages)
+    venv_python = _venv_python_path(PROJECT_DIR)
+    return _detect_tool_versions(PROJECT_DIR, venv_python)
 
 
 def _resolve_static_file(url_path: str) -> Path | None:
@@ -915,7 +898,9 @@ class AppHandler(BaseHTTPRequestHandler):
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
 
             with STATE_LOCK:
-                _write_files_to_project(PROJECT_DIR, files, keep_venv=bool(dependencies))
+                _write_files_to_project(PROJECT_DIR, files, keep_venv=True)
+                # Tools are already installed in the venv from priming.
+                # Only install user-specified dependencies here.
                 dependency_install = _run_uv_pip_install(PROJECT_DIR, dependencies)
                 if dependency_install["returncode"] != 0:
                     _json_response(
@@ -936,7 +921,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                venv_python = _venv_python_path(PROJECT_DIR) if dependencies else None
+                venv_python = _venv_python_path(PROJECT_DIR)
                 base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
                 file_paths = [str(entry.get("name", "")) for entry in files]
                 results = _run_all_tools(
@@ -1018,7 +1003,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-prime",
         action="store_true",
-        help="Skip startup uvx priming (default: prime enabled)",
+        help="Skip startup tool install priming (default: prime enabled)",
     )
     return parser.parse_args()
 
@@ -1029,24 +1014,13 @@ def main() -> None:
 
     args = parse_args()
     if not args.skip_prime:
-        print("Priming tool installs (uvx)...")
-        prime_results, version_results = _prime_tool_installs()
+        print("Priming tool installs...")
+        version_results = _prime_tool_installs()
         for spec in TOOL_SPECS:
             version_info = version_results.get(spec.name, {})
             raw_version = version_info.get("version")
             TOOL_VERSIONS[spec.name] = raw_version if isinstance(raw_version, str) and raw_version else "unknown"
-
-        for spec in TOOL_SPECS:
-            result = prime_results.get(spec.name, {})
-            version = TOOL_VERSIONS.get(spec.name, "unknown")
-            returncode = result.get("returncode", "?")
-            duration_ms = result.get("duration_ms", "?")
-            print(f"  {spec.name} v{version}: rc={returncode} ({duration_ms}ms)")
-            if returncode != 0:
-                output = str(result.get("output", "")).strip()
-                first_line = output.splitlines()[0] if output else ""
-                if first_line:
-                    print(f"    {first_line}")
+            print(f"  {spec.name} v{TOOL_VERSIONS[spec.name]}")
     else:
         print("Skipping tool priming (--skip-prime)")
 

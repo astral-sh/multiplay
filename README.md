@@ -5,15 +5,15 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 1. Send all files to `/api/analyze`
 2. Rewrite all files into a local temporary directory
 3. Run:
-   - `uvx ty check .`
+   - `python -m ty check .`
    - optional: `cargo run --bin ty -- check --project <temp-project-path>` in your local Ruff clone
    - optional: `uv run --with-editable 'mypy @ <local-mypy-checkout>' mypy --color-output --pretty .`
    - optional: `uv run --with-editable 'pycroscope @ <local-pycroscope-checkout>' pycroscope --output-format concise .`
-   - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
-   - `uvx pyrefly check .`
-   - `uvx mypy --color-output --pretty .`
-   - `uvx zuban check --pretty .`
-   - `uvx pycroscope --output-format concise .`
+   - `python -m pyright --outputjson .` (then normalized to relative paths in UI)
+   - `python -m pyrefly check .`
+   - `python -m mypy --color-output --pretty .`
+   - `zuban check --pretty .`
+   - `python -m pycroscope --output-format concise .`
 4. Display output from each tool in the UI
 
 ## Run
@@ -50,12 +50,12 @@ Optional local Ruff `ty` checker:
 Optional local Python checker checkouts:
 - open the "Local checker directories (optional)" section in the header
 - provide local checkout paths for `mypy` and/or `pycroscope`
-- backend runs those tools via `uv run --with-editable '<tool> @ <checkout>' <tool> ...` instead of `uvx`
+- backend runs those tools via `uv run --with-editable '<tool> @ <checkout>' <tool> ...` instead of from the venv
 - checker card titles include the local checkout path so you can confirm which build is active
 
-On startup, the server primes `uvx` installs for all tools so the first
-`/api/analyze` call is faster, and prints detected checker versions. The UI
-also shows each detected version in the checker pane header.
+On startup, the server creates a venv in the project directory and installs all
+tools into it, then does an initial run to warm up and detect checker versions.
+The UI shows each detected version in the checker pane header.
 
 ## Sharing
 
@@ -71,11 +71,11 @@ Loading gists only requires network access (no `gh` CLI needed).
 
 ## Dependencies
 
-The header has a dependency field (comma/newline separated). When non-empty:
-- a `.venv` is created with `uv venv` and dependencies are installed with `uv pip install`
-- all type checkers are pointed at that `.venv` interpreter
+The header has a dependency field (comma/newline separated). When non-empty,
+dependencies are installed into the venv with `uv pip install` alongside the
+type checker tools. All tools run from the same venv, so they can resolve
+imports from installed packages directly.
 
-When dependency list is empty, no venv is created and no `.venv` wiring is applied.
 If dependency install fails, the UI shows a dedicated error panel with command,
 exit code, requested dependencies, and full installer output.
 
@@ -95,8 +95,6 @@ Output panes preserve ANSI terminal color codes when the tool emits them.
 ## Requirements
 
 - Python 3.14+
-- `uvx` available on `PATH`
+- `uv` available on `PATH`
 - `gh` CLI (optional, for sharing gists — install from https://cli.github.com)
-- Network access on first run so `uvx` can fetch tool packages if not already cached
-
-`uvx` uses your system-default cache and tool install directories.
+- Network access on first run so `uv` can fetch tool packages if not already cached
