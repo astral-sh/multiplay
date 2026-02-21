@@ -25,17 +25,19 @@
     </div>
 
     <div class="header-config">
-      <div class="deps-row">
-        <label class="deps-label" for="dependencies">Dependencies</label>
-        <textarea
-          id="dependencies"
-          class="deps-input"
-          rows="2"
-          placeholder="requests, pydantic, types-requests"
-          spellcheck="false"
-        ></textarea>
-      </div>
-      <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
+      <details class="advanced-config">
+        <summary>Dependencies (optional)</summary>
+        <div class="advanced-config-body">
+          <textarea
+            id="dependencies"
+            class="deps-input deps-textarea"
+            rows="2"
+            placeholder="requests, pydantic, types-requests"
+            spellcheck="false"
+          ></textarea>
+          <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
+        </div>
+      </details>
       <details class="advanced-config">
         <summary>Local checker directories (optional)</summary>
         <div class="advanced-config-body">

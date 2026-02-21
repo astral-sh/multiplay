@@ -338,6 +338,12 @@ h1 {
   resize: vertical;
 }
 
+.deps-textarea {
+  width: 100%;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+}
+
 .deps-input:focus {
   outline: none;
   border-color: var(--accent);
