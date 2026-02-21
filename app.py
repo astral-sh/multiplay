@@ -62,6 +62,7 @@ TOOL_SPECS = [
 TOOL_SPEC_BY_NAME = {spec.name: spec for spec in TOOL_SPECS}
 TOOL_ORDER = [spec.name for spec in TOOL_SPECS]
 RUFF_TY_TOOL_NAME = "ty_ruff"
+PYTHON_IMPLEMENTED_TOOLS = ("mypy", "pycroscope")
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -228,6 +229,51 @@ def _normalize_ruff_repo_path(raw: Any) -> Path | None:
     return resolved
 
 
+def _normalize_python_tool_repo_paths(raw: Any) -> dict[str, Path]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("python_tool_repo_paths must be an object mapping tool names to directories")
+
+    allowed = set(PYTHON_IMPLEMENTED_TOOLS)
+    normalized: dict[str, Path] = {}
+    for raw_tool_name, raw_path in raw.items():
+        if not isinstance(raw_tool_name, str):
+            raise ValueError("python_tool_repo_paths keys must be tool names")
+        tool_name = raw_tool_name.strip()
+        if tool_name not in allowed:
+            raise ValueError(f"Unsupported python_tool_repo_paths tool: {raw_tool_name!r}")
+        if not isinstance(raw_path, str):
+            raise ValueError(f"Path for {tool_name!r} must be a string")
+
+        text = raw_path.strip()
+        if not text:
+            continue
+
+        path = Path(text).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError(f"{tool_name} repo path does not exist: {text!r}") from exc
+        except OSError as exc:
+            raise ValueError(f"Could not resolve {tool_name} repo path {text!r}: {exc}") from exc
+
+        if not resolved.is_dir():
+            raise ValueError(f"{tool_name} repo path is not a directory: {text!r}")
+        normalized[tool_name] = resolved
+
+    return normalized
+
+
+def _python_tool_repo_paths_payload(paths: dict[str, Path]) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for tool_name in PYTHON_IMPLEMENTED_TOOLS:
+        path = paths.get(tool_name)
+        if path is not None:
+            payload[tool_name] = str(path)
+    return payload
+
+
 def _tool_order_for_request(ruff_repo_path: Path | None) -> list[str]:
     order = list(TOOL_ORDER)
     if ruff_repo_path is None:
@@ -350,8 +396,25 @@ def _insert_flag_before_target(command: list[str], flag: str, value: str) -> lis
     return [*command, flag, value]
 
 
-def _command_for_tool(spec: ToolSpec, venv_python: Path | None, file_paths: list[str] | None = None) -> list[str]:
-    command = list(spec.command)
+def _command_for_local_python_tool(spec: ToolSpec, repo_path: Path) -> list[str]:
+    if len(spec.command) < 2:
+        return list(spec.command)
+    requirement = f"{spec.name} @ {repo_path}"
+    return ["uv", "run", "--with-editable", requirement, spec.command[1], *spec.command[2:]]
+
+
+def _command_for_tool(
+    spec: ToolSpec,
+    venv_python: Path | None,
+    python_tool_repo_paths: dict[str, Path] | None = None,
+    file_paths: list[str] | None = None,
+) -> list[str]:
+    repo_path = (python_tool_repo_paths or {}).get(spec.name)
+    command = (
+        _command_for_local_python_tool(spec, repo_path)
+        if repo_path is not None
+        else list(spec.command)
+    )
 
     # Zuban doesn't exclude .venv when scanning ".", so pass explicit files.
     if spec.name == "zuban" and file_paths and command and command[-1] == ".":
@@ -613,6 +676,7 @@ def _run_ruff_ty_from_repo(
 def _run_all_tools(
     project_dir: Path,
     venv_python: Path | None = None,
+    python_tool_repo_paths: dict[str, Path] | None = None,
     enabled_tools: list[str] | None = None,
     timeout_seconds: int = 120,
     file_paths: list[str] | None = None,
@@ -624,7 +688,10 @@ def _run_all_tools(
     if not selected_specs:
         return results
 
-    command_by_tool = {spec.name: _command_for_tool(spec, venv_python, file_paths) for spec in selected_specs}
+    command_by_tool = {
+        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths)
+        for spec in selected_specs
+    }
     with ThreadPoolExecutor(max_workers=max(1, len(selected_specs))) as executor:
         futures = {
             executor.submit(
@@ -798,6 +865,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "tool_order": list(TOOL_ORDER),
                     "enabled_tools": list(TOOL_ORDER),
                     "initial_ruff_repo_path": "",
+                    "initial_python_tool_repo_paths": {},
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
                 },
@@ -842,6 +910,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 raise ValueError("Expected non-empty 'files' list")
             dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
             ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
+            python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
 
@@ -860,6 +929,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "enabled_tools": enabled_tools,
                             "tool_order": tool_order,
                             "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
+                            "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                             "tool_versions": dict(TOOL_VERSIONS),
                             "temp_dir": str(PROJECT_DIR),
                         },
@@ -872,6 +942,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 results = _run_all_tools(
                     PROJECT_DIR,
                     venv_python,
+                    python_tool_repo_paths,
                     base_enabled_tools,
                     timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
                     file_paths=file_paths,
@@ -894,6 +965,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "enabled_tools": enabled_tools,
                     "tool_order": tool_order,
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
+                    "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                     "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
                 },

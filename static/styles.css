@@ -353,6 +353,30 @@ h1 {
   font-size: 0.86em;
 }
 
+.advanced-config {
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--input-bg);
+}
+
+.advanced-config > summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.advanced-config > summary:hover {
+  color: var(--accent-strong);
+}
+
+.advanced-config-body {
+  border-top: 1px solid var(--border);
+  padding: 10px;
+}
+
 .dep-error {
   margin: 0 0 8px;
   border: 1px solid var(--error-border);

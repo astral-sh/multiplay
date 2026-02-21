@@ -7,6 +7,8 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 3. Run:
    - `uvx ty check .`
    - optional: `cargo run --bin ty -- check --project <temp-project-path>` in your local Ruff clone
+   - optional: `uv run --with-editable 'mypy @ <local-mypy-checkout>' mypy --color-output --pretty .`
+   - optional: `uv run --with-editable 'pycroscope @ <local-pycroscope-checkout>' pycroscope --output-format concise .`
    - `uvx pyright --outputjson .` (then normalized to relative paths in UI)
    - `uvx pyrefly check .`
    - `uvx mypy --color-output --pretty .`
@@ -40,10 +42,16 @@ Each checker card includes:
 - a drag grip for reordering panels
 
 Optional local Ruff `ty` checker:
-- provide a local Ruff clone path in the header input
+- provide a local Ruff clone path in the "Local checker directories (optional)" section
 - this adds a `ty (/path/to/checkout)` checker card for side-by-side comparison
 - backend runs it from that repo with `cargo run --bin ty -- check --project <temp-project-path>`
 - this local-checkout run is not capped by the 2-second analyze timeout
+
+Optional local Python checker checkouts:
+- open the "Local checker directories (optional)" section in the header
+- provide local checkout paths for `mypy` and/or `pycroscope`
+- backend runs those tools via `uv run --with-editable '<tool> @ <checkout>' <tool> ...` instead of `uvx`
+- checker card titles include the local checkout path so you can confirm which build is active
 
 On startup, the server primes `uvx` installs for all tools so the first
 `/api/analyze` call is faster, and prints detected checker versions. The UI
