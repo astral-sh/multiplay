@@ -1029,10 +1029,16 @@ def main() -> None:
     else:
         print("Skipping tool priming (--skip-prime)")
 
-    server = ThreadingHTTPServer((args.host, args.port), AppHandler)
+    port = args.port
+    while True:
+        try:
+            server = ThreadingHTTPServer((args.host, port), AppHandler)
+            break
+        except OSError:
+            port += 1
     print(f"Static directory: {STATIC_DIR}")
     print(f"Temporary project directory: {PROJECT_DIR}")
-    print(f"\nServing app on \033[1;4;32mhttp://{args.host}:{args.port}\033[0m")
+    print(f"\nServing app on \033[1;4;32mhttp://{args.host}:{port}\033[0m")
 
     try:
         server.serve_forever()
