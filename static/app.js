@@ -1893,4 +1893,72 @@ async function bootstrap() {
   });
 })();
 
+// Drag-to-resize panel divider between editor and results panels.
+(function initPanelResize() {
+  const PANEL_RATIO_KEY = "multiplay_panel_ratio";
+  const divider = document.getElementById("panel-divider");
+  const container = document.querySelector(".container");
+  if (!divider || !container) return;
+
+  // Restore saved ratio
+  const saved = localStorage.getItem(PANEL_RATIO_KEY);
+  if (saved) {
+    const ratio = parseFloat(saved);
+    if (ratio > 0 && ratio < 1) applyRatio(ratio);
+  }
+
+  function applyRatio(ratio) {
+    container.style.setProperty("--left-panel-fr", ratio + "fr");
+    container.style.setProperty("--right-panel-fr", 1 - ratio + "fr");
+  }
+
+  let dragging = false;
+
+  function onPointerDown(e) {
+    // Only on wide screens where the divider is visible
+    if (window.innerWidth < 981) return;
+    e.preventDefault();
+    dragging = true;
+    divider.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+  }
+
+  function onPointerMove(e) {
+    if (!dragging) return;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    // Clamp ratio between 20% and 80%
+    const ratio = Math.min(0.8, Math.max(0.2, x / rect.width));
+    applyRatio(ratio);
+  }
+
+  function onPointerUp() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", onPointerUp);
+
+    // Persist the current ratio
+    const left = container.style.getPropertyValue("--left-panel-fr");
+    if (left) {
+      try { localStorage.setItem(PANEL_RATIO_KEY, parseFloat(left)); } catch {}
+    }
+  }
+
+  divider.addEventListener("pointerdown", onPointerDown);
+
+  // Double-click resets to default
+  divider.addEventListener("dblclick", () => {
+    container.style.removeProperty("--left-panel-fr");
+    container.style.removeProperty("--right-panel-fr");
+    try { localStorage.removeItem(PANEL_RATIO_KEY); } catch {}
+  });
+})();
+
 bootstrap();
