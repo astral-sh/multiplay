@@ -552,6 +552,26 @@ textarea {
   cursor: not-allowed;
 }
 
+.tab-item[draggable="true"] {
+  cursor: grab;
+}
+
+.tab-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.tab-item.tab-dragging {
+  opacity: 0.4;
+}
+
+.tab-item.tab-drag-over-before {
+  box-shadow: -3px 0 0 0 var(--accent);
+}
+
+.tab-item.tab-drag-over-after {
+  box-shadow: 3px 0 0 0 var(--accent);
+}
+
 .editor-wrap {
   background: var(--panel);
   border: 1px solid var(--border);
