@@ -1453,13 +1453,23 @@ function isUniqueName(name, ignoreIndex) {
   return !state.files.some((f, idx) => idx !== ignoreIndex && f.name === name);
 }
 
-function scheduleAnalyze() {
+function scheduleAnalyze({ onlyTools } = {}) {
   saveState();
   if (state.debounceTimer) {
     clearTimeout(state.debounceTimer);
+    // Merge with pending debounced call: if either is a full run, do full.
+    if (!onlyTools || !state.pendingOnlyTools) {
+      onlyTools = undefined;
+    } else {
+      onlyTools = [...new Set([...state.pendingOnlyTools, ...onlyTools])];
+    }
   }
+  state.pendingOnlyTools = onlyTools;
   state.debounceTimer = setTimeout(() => {
-    analyze();
+    const pending = state.pendingOnlyTools;
+    state.pendingOnlyTools = undefined;
+    state.debounceTimer = null;
+    analyze({ onlyTools: pending });
   }, state.debounceMs);
 }
 
@@ -1682,13 +1692,17 @@ function renderResults(resultByTool) {
       if (!current) {
         return;
       }
-      current.enabled = !(current.enabled !== false);
+      const wasEnabled = current.enabled !== false;
+      current.enabled = !wasEnabled;
       if (!current.enabled) {
         current.collapsed = true;
+        delete state.lastResults[tool];
       }
       saveState();
       renderResults(state.lastResults);
-      scheduleAnalyze();
+      if (current.enabled) {
+        scheduleAnalyze({ onlyTools: [tool] });
+      }
     });
 
     const collapseBtn = document.createElement("button");
@@ -1824,7 +1838,10 @@ function handleMetadataMessage(msg) {
     pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
   }
   ensureToolSettings();
-  if (Array.isArray(msg.enabled_tools)) {
+  // For partial runs (e.g. toggling a single tool on), the server only knows
+  // about the subset we sent — don't let its enabled_tools list overwrite the
+  // client-side state for the tools we didn't send.
+  if (!state.currentOnlyTools && Array.isArray(msg.enabled_tools)) {
     const enabledSet = new Set(normalizeToolList(msg.enabled_tools));
     toolOrder.forEach((tool) => {
       const settings = state.toolSettings[tool];
@@ -1837,18 +1854,26 @@ function handleMetadataMessage(msg) {
     tempDirEl.textContent = "Temp directory: " + msg.temp_dir;
   }
 
-  state.lastResults = {};
-
-  // Avoid a full DOM rebuild if the tool list hasn't changed — just reset
-  // each card to "pending" status in place, which is much cheaper.
-  const toolListChanged =
-    prevToolOrder.length !== toolOrder.length ||
-    prevToolOrder.some((t, i) => t !== toolOrder[i]);
-
-  if (toolListChanged) {
-    renderResults(state.lastResults);
+  if (state.currentOnlyTools) {
+    // Partial run: only clear results for the tools being re-analyzed.
+    for (const tool of state.currentOnlyTools) {
+      delete state.lastResults[tool];
+    }
+    resetSpecificCardsToPending(state.currentOnlyTools);
   } else {
-    resetCardsToPending();
+    state.lastResults = {};
+
+    // Avoid a full DOM rebuild if the tool list hasn't changed — just reset
+    // each card to "pending" status in place, which is much cheaper.
+    const toolListChanged =
+      prevToolOrder.length !== toolOrder.length ||
+      prevToolOrder.some((t, i) => t !== toolOrder[i]);
+
+    if (toolListChanged) {
+      renderResults(state.lastResults);
+    } else {
+      resetCardsToPending();
+    }
   }
 }
 
@@ -1878,6 +1903,26 @@ function resetCardsToPending() {
       } else {
         pre.textContent = "";
       }
+    }
+  });
+}
+
+function resetSpecificCardsToPending(tools) {
+  const toolSet = new Set(tools);
+  resultsEl.querySelectorAll(".result-card").forEach((card) => {
+    if (!toolSet.has(card.dataset.tool)) return;
+
+    card.classList.remove("tool-disabled");
+
+    const meta = card.querySelector(".meta");
+    if (meta) {
+      meta.textContent = "pending";
+      meta.classList.add("meta-pending");
+    }
+
+    const pre = card.querySelector("pre");
+    if (pre) {
+      pre.textContent = "";
     }
   });
 }
@@ -1949,7 +1994,7 @@ function updateResultCard(tool, result) {
   }
 }
 
-async function analyze() {
+async function analyze({ onlyTools } = {}) {
   const requestId = ++state.requestNumber;
   setStatus("Analyzing...");
 
@@ -1959,7 +2004,9 @@ async function analyze() {
   }
   const controller = new AbortController();
   state.currentController = controller;
+  state.currentOnlyTools = onlyTools || null;
 
+  const toolsToSend = onlyTools || enabledTools();
   const refreshVenv = state.refreshVenv;
   state.refreshVenv = false;
   const payload = {
@@ -1968,7 +2015,7 @@ async function analyze() {
     refresh_venv: refreshVenv,
     ruff_repo_path: state.ruffRepoPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
-    enabled_tools: enabledTools(),
+    enabled_tools: toolsToSend,
   };
 
   try {
@@ -2061,6 +2108,7 @@ async function analyze() {
   } finally {
     if (state.currentController === controller) {
       state.currentController = null;
+      state.currentOnlyTools = null;
     }
   }
 }
