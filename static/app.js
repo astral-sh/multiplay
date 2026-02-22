@@ -2358,4 +2358,27 @@ function initCardResize(handle, card) {
   });
 })();
 
+// Forward wheel events from non-scrollable left-column elements to the results
+// panel so trackpad scrolling over the config/tabs/editor area scrolls results
+// when those elements have no scrollbar of their own.
+(function initLeftColumnScrollForwarding() {
+  const targets = document.querySelectorAll(".header-config, .tabs-wrap");
+  targets.forEach((el) => {
+    el.addEventListener("wheel", (e) => {
+      if (window.innerWidth < 981) return;
+      resultsEl.scrollBy({ left: e.deltaX, top: e.deltaY });
+      e.preventDefault();
+    }, { passive: false });
+  });
+
+  // Editor area: forward to results only when the editor has no scrollbar.
+  const editorWrap = document.querySelector(".editor-wrap");
+  editorWrap.addEventListener("wheel", (e) => {
+    if (window.innerWidth < 981) return;
+    if (editorEl.scrollHeight > editorEl.clientHeight) return;
+    resultsEl.scrollBy({ left: e.deltaX, top: e.deltaY });
+    e.preventDefault();
+  }, { passive: false, capture: true });
+})();
+
 bootstrap();
