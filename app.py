@@ -72,6 +72,7 @@ SERVER_ID = uuid.uuid4().hex
 STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
+INSTALLED_USER_DEPS: list[str] | None = None
 ANALYZE_TOOL_TIMEOUT_SECONDS = 2
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
 
@@ -888,9 +889,29 @@ class AppHandler(BaseHTTPRequestHandler):
 
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files, keep_venv=True)
-                # Tools are already installed in the venv from priming.
-                # Only install user-specified dependencies here.
-                dependency_install = _run_uv_pip_install(PROJECT_DIR, dependencies)
+
+                # If user dependencies changed since last install, nuke the
+                # venv so stale packages are removed, then reinstall tools
+                # alongside the new dependencies.
+                global INSTALLED_USER_DEPS
+                deps_changed = (
+                    INSTALLED_USER_DEPS is not None
+                    and sorted(dependencies) != sorted(INSTALLED_USER_DEPS)
+                )
+                if deps_changed:
+                    venv_dir = PROJECT_DIR / ".venv"
+                    if venv_dir.exists():
+                        shutil.rmtree(venv_dir)
+
+                tool_packages = [spec.name for spec in TOOL_SPECS]
+                packages_to_install = (
+                    tool_packages + dependencies if deps_changed else dependencies
+                )
+                dependency_install = _run_uv_pip_install(
+                    PROJECT_DIR, packages_to_install
+                )
+                if dependency_install["returncode"] == 0:
+                    INSTALLED_USER_DEPS = list(dependencies)
                 if dependency_install["returncode"] != 0:
                     _json_response(
                         self,

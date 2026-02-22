@@ -1750,6 +1750,10 @@ function bindEvents() {
     syncHighlightScroll();
   });
 
+  depsInputEl.addEventListener("input", () => {
+    updateDependenciesFromInput({ triggerAnalyze: true });
+  });
+
   depsInputEl.addEventListener("change", () => {
     updateDependenciesFromInput({ triggerAnalyze: true });
   });
