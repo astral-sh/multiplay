@@ -1534,8 +1534,13 @@ function renderResults(resultByTool) {
       pre.innerHTML = linkifyLocations(ansiToHtml(output));
     }
 
+    const resizeHandle = document.createElement("div");
+    resizeHandle.className = "resize-handle";
+    initCardResize(resizeHandle, card);
+
     card.appendChild(header);
     card.appendChild(pre);
+    card.appendChild(resizeHandle);
     resultsEl.appendChild(card);
   });
 }
@@ -1892,6 +1897,43 @@ async function bootstrap() {
     }
   });
 })();
+
+// Drag-to-resize the bottom edge of a result card.
+function initCardResize(handle, card) {
+  let dragging = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    dragging = true;
+    startY = e.clientY;
+    startHeight = card.getBoundingClientRect().height;
+    card.classList.add("resizing");
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
+
+  function onMove(e) {
+    if (!dragging) return;
+    const delta = e.clientY - startY;
+    const newHeight = Math.max(60, startHeight + delta);
+    card.style.maxHeight = newHeight + "px";
+    card.style.height = newHeight + "px";
+  }
+
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    card.classList.remove("resizing");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+  }
+}
 
 // Drag-to-resize panel divider between editor and results panels.
 (function initPanelResize() {

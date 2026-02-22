@@ -694,8 +694,33 @@ textarea {
   max-height: 320px;
   display: flex;
   flex-direction: column;
-  resize: vertical;
   flex-shrink: 0;
+  position: relative;
+}
+
+.result-card .resize-handle {
+  height: 6px;
+  cursor: ns-resize;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.result-card .resize-handle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.result-card .resize-handle:hover::before,
+.result-card.resizing .resize-handle::before {
+  background: var(--muted);
 }
 
 .result-header {
@@ -820,8 +845,11 @@ textarea {
 
 .result-card.collapsed {
   max-height: none;
-  resize: none;
   flex-shrink: 0;
+}
+
+.result-card.collapsed .resize-handle {
+  display: none;
 }
 
 .result-card.collapsed pre {
