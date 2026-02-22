@@ -1794,6 +1794,8 @@ function renderResults(resultByTool) {
 }
 
 function handleMetadataMessage(msg) {
+  const prevToolOrder = toolOrder.slice();
+
   if (msg.tool_versions && typeof msg.tool_versions === "object") {
     state.toolVersions = { ...state.toolVersions, ...msg.tool_versions };
   }
@@ -1833,7 +1835,48 @@ function handleMetadataMessage(msg) {
   }
 
   state.lastResults = {};
-  renderResults(state.lastResults);
+
+  // Avoid a full DOM rebuild if the tool list hasn't changed — just reset
+  // each card to "pending" status in place, which is much cheaper.
+  const toolListChanged =
+    prevToolOrder.length !== toolOrder.length ||
+    prevToolOrder.some((t, i) => t !== toolOrder[i]);
+
+  if (toolListChanged) {
+    renderResults(state.lastResults);
+  } else {
+    resetCardsToPending();
+  }
+}
+
+function resetCardsToPending() {
+  resultsEl.querySelectorAll(".result-card").forEach((card) => {
+    const tool = card.dataset.tool;
+    const settings = state.toolSettings[tool];
+    const enabled = !settings || settings.enabled !== false;
+
+    card.classList.toggle("tool-disabled", !enabled);
+
+    const meta = card.querySelector(".meta");
+    if (meta) {
+      if (!enabled) {
+        meta.textContent = "disabled";
+        meta.classList.remove("meta-pending");
+      } else {
+        meta.textContent = "pending";
+        meta.classList.add("meta-pending");
+      }
+    }
+
+    const pre = card.querySelector("pre");
+    if (pre) {
+      if (!enabled) {
+        pre.textContent = "Tool is turned off for this analysis.";
+      } else {
+        pre.textContent = "";
+      }
+    }
+  });
 }
 
 function handleResultMessage(msg) {
@@ -1871,7 +1914,34 @@ function updateResultCard(tool, result) {
       pre.textContent = "Tool is turned off for this analysis.";
     } else {
       const output = typeof result.output === "string" ? result.output : "";
-      pre.innerHTML = linkifyLocations(ansiToHtml(output));
+      let visible = output;
+      let truncated = false;
+      let truncMsg = "";
+      const lines = output.split("\n");
+      if (lines.length > OUTPUT_MAX_LINES) {
+        visible = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
+        truncated = true;
+        truncMsg = `Output truncated (showing ${OUTPUT_MAX_LINES} of ${lines.length} lines). Click to show all.`;
+      }
+      if (visible.length > OUTPUT_MAX_CHARS) {
+        visible = visible.slice(0, OUTPUT_MAX_CHARS);
+        truncated = true;
+        truncMsg = `Output truncated (showing ~${Math.round(OUTPUT_MAX_CHARS / 1000)}k of ${Math.round(output.length / 1000)}k chars). Click to show all.`;
+      }
+      pre.innerHTML = linkifyLocations(ansiToHtml(visible));
+      if (truncated) {
+        const notice = document.createElement("div");
+        notice.className = "truncation-notice";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = truncMsg;
+        btn.addEventListener("click", () => {
+          pre.innerHTML = linkifyLocations(ansiToHtml(output));
+          notice.remove();
+        });
+        notice.appendChild(btn);
+        pre.appendChild(notice);
+      }
     }
   }
 }
