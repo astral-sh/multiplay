@@ -73,6 +73,7 @@ const TOOL_DOCS_URL = {
 };
 
 let draggedTool = null;
+let draggedFileIndex = null;
 
 const state = {
   files: [],
@@ -1030,6 +1031,57 @@ function renderTabs() {
       event.preventDefault();
       event.stopPropagation();
       removeFileAtIndex(idx);
+    });
+
+    // Drag-and-drop reordering
+    item.draggable = true;
+    item.addEventListener("dragstart", (event) => {
+      draggedFileIndex = idx;
+      item.classList.add("tab-dragging");
+      event.dataTransfer.effectAllowed = "move";
+    });
+    item.addEventListener("dragend", () => {
+      draggedFileIndex = null;
+      item.classList.remove("tab-dragging");
+      tabsEl.querySelectorAll(".tab-item").forEach((t) => {
+        t.classList.remove("tab-drag-over-before", "tab-drag-over-after");
+      });
+    });
+    item.addEventListener("dragover", (event) => {
+      if (draggedFileIndex === null || draggedFileIndex === idx) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const rect = item.getBoundingClientRect();
+      const midX = rect.left + rect.width / 2;
+      const before = event.clientX < midX;
+      item.classList.toggle("tab-drag-over-before", before);
+      item.classList.toggle("tab-drag-over-after", !before);
+    });
+    item.addEventListener("dragleave", () => {
+      item.classList.remove("tab-drag-over-before", "tab-drag-over-after");
+    });
+    item.addEventListener("drop", (event) => {
+      event.preventDefault();
+      item.classList.remove("tab-drag-over-before", "tab-drag-over-after");
+      if (draggedFileIndex === null || draggedFileIndex === idx) return;
+      const rect = item.getBoundingClientRect();
+      const midX = rect.left + rect.width / 2;
+      const before = event.clientX < midX;
+      const [movedFile] = state.files.splice(draggedFileIndex, 1);
+      let toIndex = before ? idx : idx + 1;
+      if (draggedFileIndex < idx) toIndex--;
+      state.files.splice(toIndex, 0, movedFile);
+      // Keep activeIndex pointing at the same file
+      if (draggedFileIndex === state.activeIndex) {
+        state.activeIndex = toIndex;
+      } else if (draggedFileIndex < state.activeIndex && toIndex >= state.activeIndex) {
+        state.activeIndex--;
+      } else if (draggedFileIndex > state.activeIndex && toIndex <= state.activeIndex) {
+        state.activeIndex++;
+      }
+      draggedFileIndex = null;
+      saveState();
+      renderTabs();
     });
 
     item.appendChild(btn);
