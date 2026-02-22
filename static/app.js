@@ -88,6 +88,7 @@ const state = {
   toolVersions: {},
   toolSettings: {},
   lastResults: {},
+  refreshVenv: false,
 };
 
 // Server-restart auto-reload: poll /api/health and reload if the server ID changes
@@ -1194,15 +1195,10 @@ function enabledTools() {
   });
 }
 
-function updateDependenciesFromInput({ triggerAnalyze } = { triggerAnalyze: false }) {
+function updateDependenciesFromInput({ triggerAnalyze = false } = {}) {
   const parsed = parseDependencies(depsInputEl.value);
-  const nextText = dependenciesToText(parsed);
-  const prevText = dependenciesToText(state.dependencies);
-  depsInputEl.value = nextText;
-  if (nextText === prevText) {
-    return;
-  }
   state.dependencies = parsed;
+  state.refreshVenv = true;
   if (triggerAnalyze) {
     scheduleAnalyze();
   }
@@ -1561,9 +1557,12 @@ async function analyze() {
   const requestId = ++state.requestNumber;
   setStatus("Analyzing...");
 
+  const refreshVenv = state.refreshVenv;
+  state.refreshVenv = false;
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     dependencies: state.dependencies.slice(),
+    refresh_venv: refreshVenv,
     ruff_repo_path: state.ruffRepoPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
     enabled_tools: enabledTools(),
@@ -1629,13 +1628,6 @@ async function analyze() {
           settings.enabled = enabledSet.has(tool);
         }
       });
-    }
-    if (Array.isArray(body.dependencies)) {
-      state.dependencies = body.dependencies
-        .filter((dep) => typeof dep === "string")
-        .map((dep) => dep.trim())
-        .filter((dep) => dep.length > 0);
-      depsInputEl.value = dependenciesToText(state.dependencies);
     }
 
     state.lastResults = body.results && typeof body.results === "object" ? body.results : {};
@@ -1751,14 +1743,6 @@ function bindEvents() {
   });
 
   depsInputEl.addEventListener("input", () => {
-    updateDependenciesFromInput({ triggerAnalyze: true });
-  });
-
-  depsInputEl.addEventListener("change", () => {
-    updateDependenciesFromInput({ triggerAnalyze: true });
-  });
-
-  depsInputEl.addEventListener("blur", () => {
     updateDependenciesFromInput({ triggerAnalyze: true });
   });
 
@@ -1894,6 +1878,7 @@ async function bootstrap() {
   bindEvents();
   renderTabs();
   syncEditorFromState();
+  state.refreshVenv = true;
   analyze();
 }
 
