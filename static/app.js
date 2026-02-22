@@ -117,23 +117,44 @@ const state = {
 (function initServerReloadWatcher() {
   let knownServerId = null;
   const POLL_INTERVAL_MS = 2000;
+  let serverDown = false;
+
+  // Create the disconnection banner (hidden by default)
+  const banner = document.createElement("div");
+  banner.className = "server-down-banner";
+  banner.setAttribute("role", "alert");
+  banner.innerHTML =
+    '<span class="server-down-icon">&#x26A0;</span>' +
+    '<span>Server disconnected &mdash; results may be stale</span>';
+  document.body.prepend(banner);
+
+  function setServerDown(down) {
+    if (down === serverDown) return;
+    serverDown = down;
+    banner.classList.toggle("visible", down);
+    document.body.classList.toggle("server-down", down);
+  }
 
   async function poll() {
     try {
       const resp = await fetch("/api/health");
-      if (!resp.ok) return;
-      const body = await resp.json();
-      const id = body.server_id;
-      if (!id) return;
-
-      if (knownServerId === null) {
-        knownServerId = id;
-      } else if (id !== knownServerId) {
-        location.reload();
-        return;
+      if (!resp.ok) {
+        setServerDown(true);
+      } else {
+        const body = await resp.json();
+        const id = body.server_id;
+        if (id) {
+          if (knownServerId === null) {
+            knownServerId = id;
+          } else if (id !== knownServerId) {
+            location.reload();
+            return;
+          }
+        }
+        setServerDown(false);
       }
     } catch {
-      // Server is down — keep polling until it comes back
+      setServerDown(true);
     }
     setTimeout(poll, POLL_INTERVAL_MS);
   }

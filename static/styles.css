@@ -1295,3 +1295,48 @@ textarea {
     gap: 4px;
   }
 }
+
+/* Server disconnected banner */
+.server-down-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--error);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: var(--sans);
+  transform: translateY(-100%);
+  opacity: 0;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.server-down-banner.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.server-down-icon {
+  font-size: 1.1rem;
+}
+
+/* Push page content down when banner is visible */
+body.server-down .container {
+  padding-top: calc(16px + 38px);
+}
+
+/* Dim results when server is down */
+body.server-down .results {
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
