@@ -554,6 +554,35 @@ textarea {
   min-width: 0;
 }
 
+#line-numbers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--gutter-width, 36px);
+  height: 100%;
+  padding: 14px 0 14px 0;
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  text-align: right;
+  color: color-mix(in srgb, var(--muted) 50%, transparent);
+  background: var(--editor-bg);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  user-select: none;
+  cursor: pointer;
+  z-index: 1;
+}
+
+#line-numbers .ln {
+  display: block;
+  padding-right: 8px;
+}
+
+#line-numbers .ln:hover {
+  color: var(--muted);
+}
+
 #highlight,
 #editor {
   width: 100%;
@@ -562,6 +591,7 @@ textarea {
   border: none;
   outline: none;
   padding: 14px;
+  padding-left: calc(var(--gutter-width, 36px) + 12px);
   font-family: var(--mono);
   font-size: 0.92rem;
   line-height: 1.45;

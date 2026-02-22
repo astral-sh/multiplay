@@ -123,6 +123,7 @@ const depsInputEl = document.getElementById("dependencies");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
+const lineNumbersEl = document.getElementById("line-numbers");
 const highlightEl = document.getElementById("highlight");
 const editorEl = document.getElementById("editor");
 const statusEl = document.getElementById("status");
@@ -828,13 +829,54 @@ function renderHighlightedCode(source, filename) {
 function syncHighlightScroll() {
   highlightEl.scrollTop = editorEl.scrollTop;
   highlightEl.scrollLeft = editorEl.scrollLeft;
+  lineNumbersEl.scrollTop = editorEl.scrollTop;
 }
+
+function updateLineNumbers(source) {
+  const lineCount = source ? source.split("\n").length : 1;
+  let html = "";
+  for (let i = 1; i <= lineCount; i++) {
+    html += `<span class="ln" data-line="${i}">${i}</span>`;
+  }
+  lineNumbersEl.innerHTML = html;
+}
+
+function selectLine(lineNumber) {
+  const content = editorEl.value;
+  const lines = content.split("\n");
+  if (lineNumber < 1 || lineNumber > lines.length) return;
+
+  let start = 0;
+  for (let i = 0; i < lineNumber - 1; i++) {
+    start += lines[i].length + 1;
+  }
+  const end = start + lines[lineNumber - 1].length;
+
+  editorEl.focus();
+  editorEl.setSelectionRange(start, end);
+}
+
+lineNumbersEl.addEventListener("click", (event) => {
+  const ln = event.target.closest(".ln");
+  if (!ln) return;
+  const lineNumber = parseInt(ln.dataset.line, 10);
+  if (!isNaN(lineNumber)) {
+    selectLine(lineNumber);
+  }
+});
+
+lineNumbersEl.addEventListener("wheel", (event) => {
+  editorEl.scrollTop += event.deltaY;
+  editorEl.scrollLeft += event.deltaX;
+  event.preventDefault();
+}, { passive: false });
 
 function refreshHighlight(content) {
   const file = activeFile();
   const source = typeof content === "string" ? content : file ? file.content : "";
   const filename = file ? file.name : "";
   highlightEl.innerHTML = renderHighlightedCode(source, filename);
+  updateLineNumbers(source);
   syncHighlightScroll();
 }
 
