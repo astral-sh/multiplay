@@ -2062,12 +2062,107 @@ function removeFileAtIndex(index) {
   scheduleAnalyze();
 }
 
+function isPythonFile() {
+  const file = activeFile();
+  if (!file) return false;
+  const ext = extensionOf(file.name);
+  return ext === ".py" || ext === ".pyi";
+}
+
 function bindEvents() {
   editorEl.addEventListener("input", (event) => {
     const content = event.target.value;
     refreshHighlight(content);
     updateActiveFileContent(content);
     updateColGuideCursor();
+  });
+
+  editorEl.addEventListener("keydown", (event) => {
+    if (!isPythonFile()) return;
+
+    // Tab / Shift+Tab: indent or dedent selected lines
+    if (event.key === "Tab") {
+      const val = editorEl.value;
+      const start = editorEl.selectionStart;
+      const end = editorEl.selectionEnd;
+
+      // Find the start of the first selected line and end of the last
+      const blockStart = val.lastIndexOf("\n", start - 1) + 1;
+      const blockEnd = val.indexOf("\n", end - (end > start && val[end - 1] === "\n" ? 1 : 0));
+      const blockEndFinal = blockEnd < 0 ? val.length : blockEnd;
+      const block = val.slice(blockStart, blockEndFinal);
+      const lines = block.split("\n");
+
+      let newLines;
+      let deltaFirst = 0; // change in length of first line (for selectionStart adjustment)
+      let deltaTotal = 0; // total change in length (for selectionEnd adjustment)
+
+      if (event.shiftKey) {
+        // Dedent: remove up to 4 leading spaces (or one tab) from each line
+        newLines = lines.map((line, i) => {
+          const m = line.match(/^( {1,4}|\t)/);
+          const removed = m ? m[0].length : 0;
+          if (i === 0) deltaFirst = -removed;
+          deltaTotal -= removed;
+          return removed > 0 ? line.slice(removed) : line;
+        });
+      } else {
+        // Indent: add 4 spaces to the start of each line
+        newLines = lines.map((line, i) => {
+          if (i === 0) deltaFirst = 4;
+          deltaTotal += 4;
+          return "    " + line;
+        });
+      }
+
+      event.preventDefault();
+      const newBlock = newLines.join("\n");
+
+      // Replace the block range by selecting it, then using execCommand for undo support
+      editorEl.setSelectionRange(blockStart, blockEndFinal);
+      document.execCommand("insertText", false, newBlock);
+
+      // Restore selection over the modified lines
+      const newStart = Math.max(blockStart, start + deltaFirst);
+      const newEnd = Math.max(newStart, end + deltaTotal);
+      editorEl.setSelectionRange(newStart, newEnd);
+      return;
+    }
+
+    // Enter: autoindent
+    if (event.key === "Enter") {
+      const val = editorEl.value;
+      const pos = editorEl.selectionStart;
+
+      // Find the current line (text from the previous newline up to cursor)
+      const lineStart = val.lastIndexOf("\n", pos - 1) + 1;
+      const lineText = val.slice(lineStart, pos);
+
+      // Current line's leading whitespace
+      const indentMatch = lineText.match(/^[ \t]*/);
+      const currentIndent = indentMatch ? indentMatch[0] : "";
+
+      // Determine the stripped line content (ignoring comments)
+      const stripped = lineText.replace(/#.*$/, "").trimEnd();
+
+      let newIndent = currentIndent;
+      if (stripped.endsWith(":")) {
+        // Increase indent after colon (def, class, if, for, while, with, try, etc.)
+        newIndent = currentIndent + "    ";
+      } else if (/^[ \t]*(return|break|continue|pass|raise)\b/.test(lineText)) {
+        // Dedent after block-terminating keywords
+        if (currentIndent.length >= 4) {
+          newIndent = currentIndent.slice(4);
+        } else {
+          newIndent = "";
+        }
+      }
+
+      event.preventDefault();
+      const insertion = "\n" + newIndent;
+      // Use execCommand so the insertion is undoable (Ctrl+Z)
+      document.execCommand("insertText", false, insertion);
+    }
   });
 
   editorEl.addEventListener("scroll", () => {
