@@ -1412,9 +1412,11 @@ function updateDependenciesFromInput({ triggerAnalyze = false } = {}) {
   }
 }
 
-function updateRuffRepoPathFromInput({ triggerAnalyze } = { triggerAnalyze: false }) {
+function updateRuffRepoPathFromInput({ triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
   const normalized = normalizeRuffRepoPath(ruffRepoPathEl.value);
-  ruffRepoPathEl.value = normalized;
+  if (writeBack) {
+    ruffRepoPathEl.value = normalized;
+  }
   if (normalized === state.ruffRepoPath) {
     return;
   }
@@ -1428,9 +1430,11 @@ function updateRuffRepoPathFromInput({ triggerAnalyze } = { triggerAnalyze: fals
   }
 }
 
-function updatePythonToolRepoPathFromInput(tool, inputEl, { triggerAnalyze } = { triggerAnalyze: false }) {
+function updatePythonToolRepoPathFromInput(tool, inputEl, { triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
   const normalized = normalizePythonToolRepoPath(inputEl.value);
-  inputEl.value = normalized;
+  if (writeBack) {
+    inputEl.value = normalized;
+  }
 
   const previous = pythonToolRepoPathForTool(tool);
   if (normalized === previous) {
@@ -1813,8 +1817,6 @@ function renderResults(resultByTool) {
 }
 
 function handleMetadataMessage(msg) {
-  const prevToolOrder = toolOrder.slice();
-
   if (msg.tool_versions && typeof msg.tool_versions === "object") {
     state.toolVersions = { ...state.toolVersions, ...msg.tool_versions };
   }
@@ -1832,12 +1834,9 @@ function handleMetadataMessage(msg) {
   }
   if (typeof msg.ruff_repo_path === "string") {
     state.ruffRepoPath = normalizeRuffRepoPath(msg.ruff_repo_path);
-    ruffRepoPathEl.value = state.ruffRepoPath;
   }
   if (msg.python_tool_repo_paths && typeof msg.python_tool_repo_paths === "object") {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(msg.python_tool_repo_paths);
-    mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
-    pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
   }
   ensureToolSettings();
   // For partial runs (e.g. toggling a single tool on), the server only knows
@@ -1867,9 +1866,14 @@ function handleMetadataMessage(msg) {
 
     // Avoid a full DOM rebuild if the tool list hasn't changed — just reset
     // each card to "pending" status in place, which is much cheaper.
+    // Compare against the DOM cards (not prevToolOrder) because localStorage
+    // restore may have added tools after the initial renderResults() call.
+    const renderedTools = [...resultsEl.querySelectorAll(".result-card")].map(
+      (c) => c.dataset.tool,
+    );
     const toolListChanged =
-      prevToolOrder.length !== toolOrder.length ||
-      prevToolOrder.some((t, i) => t !== toolOrder[i]);
+      renderedTools.length !== toolOrder.length ||
+      renderedTools.some((t, i) => t !== toolOrder[i]);
 
     if (toolListChanged) {
       renderResults(state.lastResults);
@@ -1886,6 +1890,19 @@ function resetCardsToPending() {
     const enabled = !settings || settings.enabled !== false;
 
     card.classList.toggle("tool-disabled", !enabled);
+    const collapsed = !!(settings && settings.collapsed);
+    card.classList.toggle("collapsed", collapsed);
+
+    const collapseBtn = card.querySelector(".tool-collapse");
+    if (collapseBtn) {
+      collapseBtn.textContent = collapsed ? "▼" : "▲";
+    }
+
+    const toggleBtn = card.querySelector(".tool-toggle");
+    if (toggleBtn) {
+      toggleBtn.className = "tool-toggle " + (enabled ? "enabled" : "disabled");
+      toggleBtn.textContent = enabled ? "On" : "Off";
+    }
 
     const meta = card.querySelector(".meta");
     if (meta) {
@@ -2322,6 +2339,10 @@ function bindEvents() {
     updateDependenciesFromInput({ triggerAnalyze: true });
   });
 
+  ruffRepoPathEl.addEventListener("input", () => {
+    updateRuffRepoPathFromInput({ triggerAnalyze: true, writeBack: false });
+  });
+
   ruffRepoPathEl.addEventListener("change", () => {
     updateRuffRepoPathFromInput({ triggerAnalyze: true });
   });
@@ -2330,12 +2351,20 @@ function bindEvents() {
     updateRuffRepoPathFromInput({ triggerAnalyze: true });
   });
 
+  mypyRepoPathEl.addEventListener("input", () => {
+    updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true, writeBack: false });
+  });
+
   mypyRepoPathEl.addEventListener("change", () => {
     updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true });
   });
 
   mypyRepoPathEl.addEventListener("blur", () => {
     updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true });
+  });
+
+  pycroscopeRepoPathEl.addEventListener("input", () => {
+    updatePythonToolRepoPathFromInput("pycroscope", pycroscopeRepoPathEl, { triggerAnalyze: true, writeBack: false });
   });
 
   pycroscopeRepoPathEl.addEventListener("change", () => {
