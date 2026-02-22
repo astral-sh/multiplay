@@ -785,6 +785,35 @@ textarea {
   background: var(--result-bg);
 }
 
+.loc-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.loc-link:hover {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.line-glow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: #e8b931;
+  opacity: 0;
+  z-index: 2;
+  animation: glow-fade 1.4s ease-in-out;
+}
+
+@keyframes glow-fade {
+  0%   { opacity: 0; }
+  15%  { opacity: 0.25; }
+  100% { opacity: 0; }
+}
+
 .result-card.collapsed {
   max-height: none;
   resize: none;
