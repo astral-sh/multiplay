@@ -313,6 +313,23 @@ h1 {
   font-size: 0.95rem;
 }
 
+.status-busy::before {
+  content: "";
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 0.4em;
+  border: 2px solid #e8a832;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: status-spin 0.8s linear infinite;
+}
+
+@keyframes status-spin {
+  to { transform: rotate(360deg); }
+}
+
 .deps-row {
   margin: 0 0 8px;
   display: grid;
