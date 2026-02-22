@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import mimetypes
@@ -83,6 +84,18 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[s
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
     handler.wfile.write(data)
+
+
+def _ndjson_start(handler: BaseHTTPRequestHandler) -> None:
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", "application/x-ndjson")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.end_headers()
+
+
+def _ndjson_send(handler: BaseHTTPRequestHandler, obj: dict[str, Any]) -> None:
+    handler.wfile.write(json.dumps(obj).encode("utf-8") + b"\n")
+    handler.wfile.flush()
 
 
 def _bytes_response(handler: BaseHTTPRequestHandler, status: int, content_type: str, data: bytes) -> None:
@@ -700,6 +713,68 @@ def _run_all_tools(
     return results
 
 
+def _iter_all_tools(
+    project_dir: Path,
+    venv_python: Path | None = None,
+    python_tool_repo_paths: dict[str, Path] | None = None,
+    enabled_tools: list[str] | None = None,
+    timeout_seconds: int = 120,
+    file_paths: list[str] | None = None,
+    ruff_repo_path: Path | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield (tool_name, result) pairs as each tool finishes."""
+    env_overrides = _venv_env_overrides(venv_python)
+    selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
+
+    command_by_tool: dict[str, list[str]] = {
+        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths)
+        for spec in selected_specs
+    }
+
+    # Include ruff_ty in the same executor so it runs in parallel.
+    # The caller only passes ruff_repo_path when ty_ruff is enabled.
+    include_ruff_ty = ruff_repo_path is not None
+
+    total_workers = len(command_by_tool) + (1 if include_ruff_ty else 0)
+    if total_workers == 0:
+        return
+
+    with ThreadPoolExecutor(max_workers=max(1, total_workers)) as executor:
+        futures = {
+            executor.submit(
+                _run_command,
+                tool_name,
+                command,
+                project_dir,
+                timeout_seconds,
+                env_overrides,
+            ): tool_name
+            for tool_name, command in command_by_tool.items()
+        }
+        if include_ruff_ty:
+            assert ruff_repo_path is not None
+            futures[executor.submit(
+                _run_ruff_ty_from_repo,
+                ruff_repo_path,
+                project_dir,
+                venv_python,
+                LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
+            )] = RUFF_TY_TOOL_NAME
+
+        for future in as_completed(futures):
+            tool_name = futures[future]
+            try:
+                yield tool_name, future.result()
+            except Exception as exc:
+                yield tool_name, {
+                    "tool": tool_name,
+                    "command": "",
+                    "returncode": -3,
+                    "duration_ms": 0,
+                    "output": f"Internal error: {exc}",
+                }
+
+
 def _prime_tool_installs() -> dict[str, dict[str, Any]]:
     """Install all tools into a venv in PROJECT_DIR and detect versions."""
     tool_packages = [spec.name for spec in TOOL_SPECS]
@@ -817,6 +892,12 @@ def _create_gist(files: list[dict[str, Any]], dependencies: list[str]) -> dict[s
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "MultifileEditor/2.0"
 
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}")
 
@@ -891,16 +972,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 _write_files_to_project(PROJECT_DIR, files)
 
                 if refresh_venv:
-                    # Dependencies changed: nuke the venv and reinstall
-                    # tools + user deps from scratch so stale packages
-                    # never linger.
                     venv_dir = PROJECT_DIR / ".venv"
                     if venv_dir.exists():
                         shutil.rmtree(venv_dir)
                     tool_packages = [spec.name for spec in TOOL_SPECS]
                     packages_to_install = tool_packages + dependencies
                 else:
-                    # Only code changed: install user deps into existing venv.
                     packages_to_install = dependencies
 
                 dependency_install = _run_uv_pip_install(
@@ -928,27 +1005,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 venv_python = _venv_python_path(PROJECT_DIR)
                 base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
                 file_paths = [str(entry.get("name", "")) for entry in files]
-                results = _run_all_tools(
-                    PROJECT_DIR,
-                    venv_python,
-                    python_tool_repo_paths,
-                    base_enabled_tools,
-                    timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
-                    file_paths=file_paths,
-                )
-                if ruff_repo_path is not None and RUFF_TY_TOOL_NAME in enabled_tools:
-                    results[RUFF_TY_TOOL_NAME] = _run_ruff_ty_from_repo(
-                        ruff_repo_path,
-                        PROJECT_DIR,
-                        venv_python,
-                        LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
-                    )
 
-            _json_response(
-                self,
-                HTTPStatus.OK,
-                {
-                    "results": results,
+                # Stream NDJSON: metadata, then each tool result, then done.
+                _ndjson_start(self)
+                _ndjson_send(self, {
+                    "type": "metadata",
                     "tool_versions": dict(TOOL_VERSIONS),
                     "dependencies": dependencies,
                     "enabled_tools": enabled_tools,
@@ -957,8 +1018,22 @@ class AppHandler(BaseHTTPRequestHandler):
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                     "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
-                },
-            )
+                })
+
+                try:
+                    for tool_name, result in _iter_all_tools(
+                        PROJECT_DIR,
+                        venv_python,
+                        python_tool_repo_paths,
+                        base_enabled_tools,
+                        timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
+                        file_paths=file_paths,
+                        ruff_repo_path=ruff_repo_path if RUFF_TY_TOOL_NAME in enabled_tools else None,
+                    ):
+                        _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
+                    _ndjson_send(self, {"type": "done"})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
         except ValueError as exc:
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except json.JSONDecodeError:
