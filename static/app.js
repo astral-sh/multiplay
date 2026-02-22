@@ -1,3 +1,24 @@
+// === CodeMirror 6 imports ===
+import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
+import { EditorState, Compartment } from "@codemirror/state";
+import {
+  syntaxHighlighting,
+  HighlightStyle,
+  indentOnInput,
+  indentUnit,
+  bracketMatching,
+  foldGutter,
+  foldKeymap,
+} from "@codemirror/language";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { autocompletion, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import { python } from "@codemirror/lang-python";
+import { json as jsonLang } from "@codemirror/lang-json";
+import { tags } from "@lezer/highlight";
+
+// === State persistence ===
+
 const STORAGE_KEY = "multiplay_state";
 
 function saveState() {
@@ -59,6 +80,8 @@ function loadSavedState() {
   }
 }
 
+// === Constants ===
+
 const DEFAULT_FILES = [
   {
     name: "main.py",
@@ -113,13 +136,12 @@ const state = {
   currentController: null,
 };
 
-// Server-restart auto-reload: poll /api/health and reload if the server ID changes
+// === Server-restart auto-reload ===
 (function initServerReloadWatcher() {
   let knownServerId = null;
   const POLL_INTERVAL_MS = 2000;
   let serverDown = false;
 
-  // Create the disconnection banner (hidden by default)
   const banner = document.createElement("div");
   banner.className = "server-down-banner";
   banner.setAttribute("role", "alert");
@@ -162,31 +184,284 @@ const state = {
   setTimeout(poll, POLL_INTERVAL_MS);
 })();
 
+// === DOM elements ===
+
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
-const lineNumbersEl = document.getElementById("line-numbers");
-const highlightEl = document.getElementById("highlight");
-const editorEl = document.getElementById("editor");
-const colGuideWrapEl = document.getElementById("col-guide-wrap");
-const colGuideEl = document.getElementById("col-guide");
-const colGuideCursorEl = document.getElementById("col-guide-cursor");
-const colGuideToggleEl = document.getElementById("col-guide-toggle");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const tempDirEl = document.getElementById("temp-dir");
 const depErrorEl = document.getElementById("dep-error");
 const themeToggleEl = document.getElementById("theme-toggle");
 
-// Theme handling
+// === CodeMirror 6 editor setup ===
+
+let editorView = null;
+const languageCompartment = new Compartment();
+
+const editorTheme = EditorView.theme({
+  "&": {
+    height: "100%",
+    fontSize: "0.92rem",
+  },
+  ".cm-scroller": {
+    fontFamily: "var(--mono)",
+    lineHeight: "1.45",
+    overflow: "auto",
+  },
+  ".cm-content": {
+    caretColor: "var(--editor-text)",
+    padding: "14px 0",
+  },
+  ".cm-gutters": {
+    backgroundColor: "var(--editor-bg)",
+    color: "color-mix(in srgb, var(--muted) 50%, transparent)",
+    border: "none",
+    borderRight: "1px solid var(--border)",
+  },
+  ".cm-lineNumbers .cm-gutterElement": {
+    paddingRight: "8px",
+    minWidth: "32px",
+  },
+  "&.cm-focused .cm-cursor": {
+    borderLeftColor: "var(--editor-text)",
+  },
+  "&.cm-focused .cm-selectionBackground, ::selection": {
+    backgroundColor: "rgba(13, 122, 111, 0.24) !important",
+  },
+  ".cm-selectionBackground": {
+    backgroundColor: "rgba(13, 122, 111, 0.15)",
+  },
+  ".cm-activeLine": {
+    backgroundColor: "transparent",
+  },
+  ".cm-selectionMatch": {
+    backgroundColor: "rgba(13, 122, 111, 0.12)",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete": {
+    fontFamily: "var(--mono)",
+    fontSize: "0.85rem",
+    border: "1px solid var(--border)",
+    backgroundColor: "var(--panel)",
+    color: "var(--ink)",
+    borderRadius: "8px",
+    boxShadow: "var(--shadow)",
+  },
+  ".cm-tooltip-autocomplete ul li": {
+    padding: "4px 8px",
+  },
+  ".cm-tooltip-autocomplete ul li[aria-selected]": {
+    backgroundColor: "var(--accent)",
+    color: "#fff",
+  },
+  ".cm-completionLabel": {
+    fontSize: "0.85rem",
+  },
+  ".cm-completionDetail": {
+    fontSize: "0.78rem",
+    fontStyle: "normal",
+    color: "var(--muted)",
+    marginLeft: "8px",
+  },
+  ".cm-tooltip-autocomplete ul li[aria-selected] .cm-completionDetail": {
+    color: "rgba(255, 255, 255, 0.7)",
+  },
+  ".cm-completionIcon": {
+    fontSize: "0.85rem",
+    opacity: "0.7",
+  },
+});
+
+const highlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.controlKeyword, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.operatorKeyword, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.definitionKeyword, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.moduleKeyword, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.string, color: "var(--syn-string)" },
+  { tag: tags.comment, color: "var(--syn-comment)", fontStyle: "italic" },
+  { tag: tags.number, color: "var(--syn-number)" },
+  { tag: tags.integer, color: "var(--syn-number)" },
+  { tag: tags.float, color: "var(--syn-number)" },
+  { tag: tags.function(tags.variableName), color: "var(--syn-builtin)", fontWeight: "600" },
+  { tag: tags.function(tags.definition(tags.variableName)), color: "var(--syn-builtin)", fontWeight: "600" },
+  { tag: tags.className, color: "var(--syn-builtin)", fontWeight: "600" },
+  { tag: tags.definition(tags.className), color: "var(--syn-builtin)", fontWeight: "600" },
+  { tag: tags.operator, color: "var(--syn-punct)" },
+  { tag: tags.punctuation, color: "var(--syn-punct)" },
+  { tag: tags.bracket, color: "var(--syn-punct)" },
+  { tag: tags.meta, color: "var(--syn-decorator)", fontWeight: "600" },
+  { tag: tags.bool, color: "var(--syn-decorator)", fontWeight: "600" },
+  { tag: tags.atom, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.null, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.self, color: "var(--syn-keyword)", fontWeight: "600" },
+  { tag: tags.special(tags.variableName), color: "var(--syn-builtin)" },
+  { tag: tags.propertyName, color: "var(--syn-builtin)" },
+]);
+
+function languageForFile(filename) {
+  const ext = extensionOf(filename);
+  if (ext === ".py" || ext === ".pyi") return python();
+  if (ext === ".json") return jsonLang();
+  return [];
+}
+
+// === Completion source ===
+
+function lspKindToType(kind) {
+  const map = {
+    1: "text",
+    2: "function",
+    3: "function",
+    4: "function",
+    5: "variable",
+    6: "variable",
+    7: "class",
+    8: "interface",
+    9: "namespace",
+    10: "property",
+    11: "enum",
+    12: "constant",
+    13: "enum",
+    14: "keyword",
+    15: "text",
+    16: "constant",
+    17: "text",
+    18: "text",
+    19: "text",
+    20: "enum",
+    21: "constant",
+    22: "class",
+    23: "keyword",
+    24: "keyword",
+    25: "type",
+  };
+  return map[kind] || "text";
+}
+
+async function tyCompletionSource(context) {
+  if (!isPythonFile()) return null;
+
+  // Match either "." followed by optional identifier, or a bare identifier
+  const dotBefore = context.matchBefore(/\.\w*/);
+  const wordBefore = context.matchBefore(/\w+/);
+
+  if (!context.explicit) {
+    // Automatic trigger: only after "." or while typing an identifier (2+ chars)
+    if (!dotBefore && (!wordBefore || wordBefore.to - wordBefore.from < 2)) return null;
+  }
+
+  const from = dotBefore ? dotBefore.from + 1 : wordBefore ? wordBefore.from : context.pos;
+
+  try {
+    const line = context.state.doc.lineAt(context.pos);
+    const resp = await fetch("/api/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: activeFile().name,
+        line: line.number - 1,
+        column: context.pos - line.from,
+        files: state.files.map((f) => ({
+          name: f.name,
+          content: f.name === activeFile().name ? context.state.doc.toString() : f.content,
+        })),
+      }),
+    });
+    const data = await resp.json();
+    if (!data.items || data.items.length === 0) return null;
+
+    // Client-side prefix filtering so we can use filter: false to preserve
+    // the server's ranking order
+    const typed = context.state.doc.sliceString(from, context.pos).toLowerCase();
+    const filtered = typed
+      ? data.items.filter((item) => {
+          const text = (item.filterText || item.label).toLowerCase();
+          return text.startsWith(typed);
+        })
+      : data.items;
+    if (filtered.length === 0) return null;
+
+    return {
+      from,
+      filter: false,
+      options: filtered.map((item) => ({
+        label: item.label,
+        type: lspKindToType(item.kind),
+        detail: item.detail || undefined,
+        apply: item.additionalTextEdits && item.additionalTextEdits.length > 0
+          ? (view, completion, fromPos, toPos) => {
+              // Build all changes: the main insertion + additional edits (e.g. auto-import)
+              const changes = [{ from: fromPos, to: toPos, insert: item.insertText || item.label }];
+              for (const edit of item.additionalTextEdits) {
+                const startLine = view.state.doc.line(edit.range.start.line + 1);
+                const endLine = view.state.doc.line(edit.range.end.line + 1);
+                changes.push({
+                  from: startLine.from + edit.range.start.character,
+                  to: endLine.from + edit.range.end.character,
+                  insert: edit.newText,
+                });
+              }
+              view.dispatch({ changes, userEvent: "input.complete" });
+            }
+          : item.insertText || item.label,
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function createEditor(parent) {
+  const extensions = [
+    lineNumbers(),
+    highlightActiveLine(),
+    history(),
+    bracketMatching(),
+    indentOnInput(),
+    indentUnit.of("    "),
+    closeBrackets(),
+    drawSelection(),
+    foldGutter(),
+    highlightSelectionMatches(),
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      indentWithTab,
+    ]),
+    languageCompartment.of(python()),
+    editorTheme,
+    syntaxHighlighting(highlightStyle),
+    autocompletion({
+      override: [tyCompletionSource],
+      activateOnTyping: true,
+    }),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        updateActiveFileContent(update.state.doc.toString());
+      }
+    }),
+  ];
+
+  editorView = new EditorView({
+    state: EditorState.create({ doc: "", extensions }),
+    parent,
+  });
+}
+
+// === Theme handling ===
+
 function initTheme() {
   const stored = localStorage.getItem("theme");
   if (stored === "dark" || stored === "light") {
     document.documentElement.setAttribute("data-theme", stored);
   }
-  // If no stored preference, CSS media query handles system preference
 }
 
 function toggleTheme() {
@@ -199,14 +474,12 @@ function toggleTheme() {
   } else if (current === "light") {
     newTheme = "dark";
   } else {
-    // No explicit theme set, toggle from system preference
     newTheme = prefersDark ? "light" : "dark";
   }
 
   document.documentElement.setAttribute("data-theme", newTheme);
   localStorage.setItem("theme", newTheme);
 
-  // Re-render results to update ANSI colors
   if (typeof renderResults === "function" && state.lastResults) {
     renderResults(state.lastResults);
   }
@@ -216,6 +489,8 @@ if (themeToggleEl) {
   themeToggleEl.addEventListener("click", toggleTheme);
 }
 initTheme();
+
+// === Header buttons ===
 
 const resetBtnEl = document.getElementById("reset-btn");
 if (resetBtnEl) {
@@ -292,7 +567,6 @@ async function handleShare() {
 function extractGistId(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return "";
-  // Accept full URLs like https://gist.github.com/user/abc123 or just the ID
   const match = trimmed.match(/([a-f0-9]+)\s*$/i);
   return match ? match[1] : trimmed;
 }
@@ -351,14 +625,8 @@ async function handleLoadGist() {
   }
 }
 
-const PY_TOKEN_RE =
-  /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(False|None|True|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b|\b(abs|all|any|bool|dict|enumerate|filter|float|int|len|list|map|max|min|object|print|range|set|sorted|str|sum|tuple|type|zip)\b|(\b\d+(?:\.\d+)?\b)|(@[A-Za-z_]\w*)/gm;
-const TOML_TOKEN_RE =
-  /(^\s*\[\[[^\]\n]+\]\])|(^\s*\[[^\]\n]+\])|(^\s*(?:"[^"\n]+"|'[^'\n]+'|[A-Za-z0-9_.-]+)\s*(?==))|(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(true|false)\b|(\b[+-]?\d+(?:\.\d+)?\b)/gim;
-const JSON_TOKEN_RE =
-  /("(?:\\.|[^"\\\n])*"\s*(?=:))|("(?:\\.|[^"\\\n])*")|(\b(?:true|false)\b)|(\bnull\b)|(\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|([{}\[\],:])/gm;
-const INI_TOKEN_RE =
-  /(^\s*[;#].*$)|(^\s*\[[^\]\n]+\])|(^\s*[A-Za-z0-9_.-]+\s*(?==))|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|(\b(?:true|false|yes|no|on|off)\b)|(\b[+-]?\d+(?:\.\d+)?\b)/gim;
+// === ANSI rendering ===
+
 const OUTPUT_MAX_LINES = 500;
 const OUTPUT_MAX_CHARS = 100_000;
 const ANSI_SGR_RE = /\u001b\[([0-9;]*)m/g;
@@ -719,6 +987,8 @@ function ansiToHtml(text) {
   return html || escapeHtml("(no output)");
 }
 
+// === Location links ===
+
 function linkifyLocations(html) {
   const names = state.files.map((f) => f.name).filter(Boolean);
   if (names.length === 0) return html;
@@ -727,7 +997,6 @@ function linkifyLocations(html) {
     "(" + escaped.join("|") + "):(\\d+)(?::(\\d+))?",
     "g",
   );
-  // Split on HTML tags so we only replace within text nodes
   const parts = html.split(/(<[^>]*>)/);
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith("<")) continue;
@@ -739,36 +1008,33 @@ function linkifyLocations(html) {
   return parts.join("");
 }
 
+// === Editor navigation ===
+
 function navigateToLine(line, col) {
-  const content = editorEl.value;
-  const lines = content.split("\n");
-  if (line < 1 || line > lines.length) return;
+  if (!editorView) return;
+  const doc = editorView.state.doc;
+  if (line < 1 || line > doc.lines) return;
 
-  let start = 0;
-  for (let i = 0; i < line - 1; i++) {
-    start += lines[i].length + 1;
-  }
-  const clampedCol = Math.min(Math.max((col || 1) - 1, 0), lines[line - 1].length);
-  const pos = start + clampedCol;
+  const lineObj = doc.line(line);
+  const clampedCol = Math.min(Math.max((col || 1) - 1, 0), lineObj.length);
+  const pos = lineObj.from + clampedCol;
 
-  editorEl.focus();
-  editorEl.setSelectionRange(pos, pos);
-
-  const style = getComputedStyle(editorEl);
-  const lineHeight = parseFloat(style.lineHeight) || 20;
-  const paddingTop = parseFloat(style.paddingTop) || 0;
-  const editorHeight = editorEl.clientHeight;
-  const targetScroll = (line - 1) * lineHeight - editorHeight / 2 + lineHeight / 2;
-  editorEl.scrollTop = Math.max(0, targetScroll);
+  editorView.dispatch({
+    selection: { anchor: pos },
+    effects: EditorView.scrollIntoView(pos, { y: "center" }),
+  });
+  editorView.focus();
 
   // Flash the target line
-  const shell = editorEl.closest(".editor-shell");
+  const shell = editorView.dom.closest(".editor-shell");
   if (shell) {
     shell.querySelectorAll(".line-glow").forEach((el) => el.remove());
+    const lineBlock = editorView.lineBlockAt(pos);
+    const editorRect = editorView.dom.getBoundingClientRect();
     const glow = document.createElement("div");
     glow.className = "line-glow";
-    glow.style.top = `${paddingTop + (line - 1) * lineHeight - editorEl.scrollTop}px`;
-    glow.style.height = `${lineHeight}px`;
+    glow.style.top = `${lineBlock.top - editorView.documentTop + editorView.dom.querySelector(".cm-scroller").scrollTop}px`;
+    glow.style.height = `${lineBlock.height}px`;
     shell.appendChild(glow);
     glow.addEventListener("animationend", () => glow.remove());
   }
@@ -780,308 +1046,7 @@ function extensionOf(filename) {
   return dot < 0 ? "" : name.slice(dot);
 }
 
-function withVisibleTrailingNewline(source, html) {
-  if (!html) {
-    return " ";
-  }
-  if (source.endsWith("\n")) {
-    return html + " ";
-  }
-  return html;
-}
-
-function renderPlain(source) {
-  return withVisibleTrailingNewline(source, escapeHtml(source));
-}
-
-function renderByRegex(source, regex, classSelector) {
-  let html = "";
-  let lastIndex = 0;
-  regex.lastIndex = 0;
-
-  for (const match of source.matchAll(regex)) {
-    const idx = match.index || 0;
-    if (idx > lastIndex) {
-      html += escapeHtml(source.slice(lastIndex, idx));
-    }
-
-    const token = match[0];
-    const cls = classSelector(match);
-    const escaped = escapeHtml(token);
-    html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
-    lastIndex = idx + token.length;
-  }
-
-  if (lastIndex < source.length) {
-    html += escapeHtml(source.slice(lastIndex));
-  }
-
-  return withVisibleTrailingNewline(source, html);
-}
-
-function renderPython(source) {
-  return renderByRegex(source, PY_TOKEN_RE, (match) => {
-    if (match[1]) {
-      return "py-comment";
-    }
-    if (match[2]) {
-      return "py-string";
-    }
-    if (match[3]) {
-      return "py-keyword";
-    }
-    if (match[4]) {
-      return "py-builtin";
-    }
-    if (match[5]) {
-      return "py-number";
-    }
-    if (match[6]) {
-      return "py-decorator";
-    }
-    return "";
-  });
-}
-
-function renderToml(source) {
-  return renderByRegex(source, TOML_TOKEN_RE, (match) => {
-    if (match[1] || match[2]) {
-      return "toml-table";
-    }
-    if (match[3]) {
-      return "toml-key";
-    }
-    if (match[4]) {
-      return "toml-comment";
-    }
-    if (match[5]) {
-      return "toml-string";
-    }
-    if (match[6]) {
-      return "toml-bool";
-    }
-    if (match[7]) {
-      return "toml-number";
-    }
-    return "";
-  });
-}
-
-function renderJson(source) {
-  return renderByRegex(source, JSON_TOKEN_RE, (match) => {
-    if (match[1]) {
-      return "json-key";
-    }
-    if (match[2]) {
-      return "json-string";
-    }
-    if (match[3]) {
-      return "json-bool";
-    }
-    if (match[4]) {
-      return "json-null";
-    }
-    if (match[5]) {
-      return "json-number";
-    }
-    if (match[6]) {
-      return "json-punct";
-    }
-    return "";
-  });
-}
-
-function renderIni(source) {
-  return renderByRegex(source, INI_TOKEN_RE, (match) => {
-    if (match[1]) {
-      return "ini-comment";
-    }
-    if (match[2]) {
-      return "ini-section";
-    }
-    if (match[3]) {
-      return "ini-key";
-    }
-    if (match[4]) {
-      return "ini-string";
-    }
-    if (match[5]) {
-      return "ini-bool";
-    }
-    if (match[6]) {
-      return "ini-number";
-    }
-    return "";
-  });
-}
-
-function renderHighlightedCode(source, filename) {
-  const ext = extensionOf(filename);
-  if (ext === ".py" || ext === ".pyi") {
-    return renderPython(source);
-  }
-  if (ext === ".toml") {
-    return renderToml(source);
-  }
-  if (ext === ".json") {
-    return renderJson(source);
-  }
-  if (ext === ".ini" || ext === ".cfg") {
-    return renderIni(source);
-  }
-  return renderPlain(source);
-}
-
-function syncHighlightScroll() {
-  highlightEl.scrollTop = editorEl.scrollTop;
-  highlightEl.scrollLeft = editorEl.scrollLeft;
-  lineNumbersEl.scrollTop = editorEl.scrollTop;
-  if (typeof syncColGuideScroll === "function") syncColGuideScroll();
-}
-
-function updateEditorOverflowFade() {
-  const shell = editorEl.closest(".editor-shell");
-  if (!shell) return;
-  const hasMore = editorEl.scrollHeight - editorEl.scrollTop - editorEl.clientHeight > 1;
-  shell.classList.toggle("has-overflow-below", hasMore);
-}
-
-new ResizeObserver(updateEditorOverflowFade).observe(editorEl);
-
-document.getElementById("editor-expand-btn").addEventListener("click", () => {
-  const wrap = document.querySelector(".editor-wrap");
-  // Expand so the editor's scroll content fits without scrolling
-  const overflow = editorEl.scrollHeight - editorEl.clientHeight;
-  if (overflow > 0) {
-    const current = wrap.getBoundingClientRect().height;
-    wrap.style.height = (current + overflow) + "px";
-    updateEditorOverflowFade();
-  }
-});
-
-function updateLineNumbers(source) {
-  const lineCount = source ? source.split("\n").length : 1;
-  let html = "";
-  for (let i = 1; i <= lineCount; i++) {
-    html += `<span class="ln" data-line="${i}">${i}</span>`;
-  }
-  lineNumbersEl.innerHTML = html;
-}
-
-function selectLine(lineNumber) {
-  const content = editorEl.value;
-  const lines = content.split("\n");
-  if (lineNumber < 1 || lineNumber > lines.length) return;
-
-  let start = 0;
-  for (let i = 0; i < lineNumber - 1; i++) {
-    start += lines[i].length + 1;
-  }
-  const end = start + lines[lineNumber - 1].length;
-
-  editorEl.focus();
-  editorEl.setSelectionRange(start, end);
-}
-
-lineNumbersEl.addEventListener("click", (event) => {
-  const ln = event.target.closest(".ln");
-  if (!ln) return;
-  const lineNumber = parseInt(ln.dataset.line, 10);
-  if (!isNaN(lineNumber)) {
-    selectLine(lineNumber);
-  }
-});
-
-lineNumbersEl.addEventListener("wheel", (event) => {
-  editorEl.scrollTop += event.deltaY;
-  editorEl.scrollLeft += event.deltaX;
-  event.preventDefault();
-}, { passive: false });
-
-// Column guide
-let colGuideCharWidth = 0;
-
-function measureCharWidth() {
-  const span = document.createElement("span");
-  span.style.cssText = `
-    position: absolute; visibility: hidden; white-space: pre;
-    font-family: ${getComputedStyle(editorEl).fontFamily};
-    font-size: ${getComputedStyle(editorEl).fontSize};
-  `;
-  span.textContent = "X".repeat(100);
-  document.body.appendChild(span);
-  colGuideCharWidth = span.offsetWidth / 100;
-  span.remove();
-}
-
-function renderColumnGuide() {
-  if (!colGuideCharWidth) measureCharWidth();
-  const totalCols = 200;
-  let html = "";
-  for (let c = 1; c <= totalCols; c++) {
-    const x = (c - 1) * colGuideCharWidth;
-    if (c % 10 === 0) {
-      html += `<span class="cg-num" style="left:${x - colGuideCharWidth * 1.5}px;width:${colGuideCharWidth * 3}px">${c}</span>`;
-      html += `<span class="cg-tick major" style="left:${x}px"></span>`;
-    } else if (c % 5 === 0) {
-      html += `<span class="cg-tick major" style="left:${x}px"></span>`;
-    } else {
-      html += `<span class="cg-tick" style="left:${x}px"></span>`;
-    }
-  }
-  colGuideEl.innerHTML = html;
-}
-
-function syncColGuideScroll() {
-  colGuideEl.style.transform = `translateX(${-editorEl.scrollLeft}px)`;
-  updateColGuideCursorPosition();
-}
-
-let lastCursorCol = 1;
-
-function getCursorColumn() {
-  const pos = editorEl.selectionStart;
-  const text = editorEl.value;
-  const lineStart = text.lastIndexOf("\n", pos - 1) + 1;
-  return pos - lineStart + 1;
-}
-
-function updateColGuideCursorPosition() {
-  if (colGuideWrapEl.classList.contains("collapsed")) return;
-  if (!colGuideCharWidth) measureCharWidth();
-  const x = (lastCursorCol - 1) * colGuideCharWidth - editorEl.scrollLeft;
-  colGuideCursorEl.style.left = `calc(var(--gutter-width, 36px) + 12px + ${x}px)`;
-}
-
-function updateColGuideCursor() {
-  if (colGuideWrapEl.classList.contains("collapsed")) return;
-  lastCursorCol = getCursorColumn();
-  colGuideCursorEl.textContent = lastCursorCol;
-  colGuideCursorEl.hidden = false;
-  updateColGuideCursorPosition();
-
-  // Hide static numbers that would overlap with the cursor indicator
-  const cursorDigits = String(lastCursorCol).length;
-  colGuideEl.querySelectorAll(".cg-num").forEach((el) => {
-    const staticCol = parseInt(el.textContent, 10);
-    const staticDigits = String(staticCol).length;
-    const minDist = (cursorDigits + staticDigits) / 2 + 1;
-    el.style.visibility = Math.abs(lastCursorCol - staticCol) < minDist ? "hidden" : "";
-  });
-}
-
-colGuideToggleEl.addEventListener("click", () => {
-  const collapsed = colGuideWrapEl.classList.toggle("collapsed");
-  localStorage.setItem("colGuideCollapsed", collapsed ? "1" : "0");
-  if (!collapsed) updateColGuideCursor();
-});
-
-// Restore collapse state (default collapsed)
-if (localStorage.getItem("colGuideCollapsed") === "0") {
-  colGuideWrapEl.classList.remove("collapsed");
-}
-
-renderColumnGuide();
+// === Results click handler ===
 
 resultsEl.addEventListener("click", (event) => {
   const link = event.target.closest(".loc-link");
@@ -1101,15 +1066,26 @@ resultsEl.addEventListener("click", (event) => {
   navigateToLine(line, col);
 });
 
-function refreshHighlight(content) {
+// === Editor sync ===
+
+function syncEditorFromState() {
+  if (!editorView) return;
   const file = activeFile();
-  const source = typeof content === "string" ? content : file ? file.content : "";
+  const content = file ? file.content : "";
   const filename = file ? file.name : "";
-  highlightEl.innerHTML = renderHighlightedCode(source, filename);
-  updateLineNumbers(source);
-  syncHighlightScroll();
-  updateEditorOverflowFade();
+
+  // Replace document content
+  editorView.dispatch({
+    changes: { from: 0, to: editorView.state.doc.length, insert: content },
+  });
+
+  // Switch language mode
+  editorView.dispatch({
+    effects: languageCompartment.reconfigure(languageForFile(filename)),
+  });
 }
+
+// === Tab management ===
 
 function renderTabs() {
   tabsEl.innerHTML = "";
@@ -1180,7 +1156,7 @@ function renderTabs() {
     removeBtn.className = "tab-icon tab-remove";
     removeBtn.type = "button";
     removeBtn.title = `Remove ${file.name}`;
-    removeBtn.textContent = "×";
+    removeBtn.textContent = "\u00d7";
     removeBtn.disabled = state.files.length <= 1;
     removeBtn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1226,7 +1202,6 @@ function renderTabs() {
       let toIndex = before ? idx : idx + 1;
       if (draggedFileIndex < idx) toIndex--;
       state.files.splice(toIndex, 0, movedFile);
-      // Keep activeIndex pointing at the same file
       if (draggedFileIndex === state.activeIndex) {
         state.activeIndex = toIndex;
       } else if (draggedFileIndex < state.activeIndex && toIndex >= state.activeIndex) {
@@ -1262,13 +1237,7 @@ function syncActiveTabClasses() {
   });
 }
 
-function syncEditorFromState() {
-  const file = activeFile();
-  editorEl.value = file ? file.content : "";
-  editorEl.scrollTop = 0;
-  editorEl.scrollLeft = 0;
-  refreshHighlight(file ? file.content : "");
-}
+// === Helper functions ===
 
 function normalizeName(name) {
   return name.trim().replace(/\\/g, "/");
@@ -1461,7 +1430,6 @@ function scheduleAnalyze({ onlyTools } = {}) {
   saveState();
   if (state.debounceTimer) {
     clearTimeout(state.debounceTimer);
-    // Merge with pending debounced call: if either is a full run, do full.
     if (!onlyTools || !state.pendingOnlyTools) {
       onlyTools = undefined;
     } else {
@@ -1541,12 +1509,19 @@ function finishTabRename(index, rawName, keepOpenOnError) {
   file.name = normalized;
   state.renamingIndex = -1;
   renderTabs();
-  refreshHighlight();
+  // Update language mode when filename changes
+  if (editorView && changed) {
+    editorView.dispatch({
+      effects: languageCompartment.reconfigure(languageForFile(normalized)),
+    });
+  }
   if (changed) {
     scheduleAnalyze();
   }
   return true;
 }
+
+// === Results rendering ===
 
 function renderResults(resultByTool) {
   resultsEl.innerHTML = "";
@@ -1714,7 +1689,7 @@ function renderResults(resultByTool) {
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
     collapseBtn.className = "tool-collapse";
-    collapseBtn.textContent = collapsed ? "▼" : "▲";
+    collapseBtn.textContent = collapsed ? "\u25bc" : "\u25b2";
     collapseBtn.title = collapsed ? `Show ${displayName} output` : `Hide ${displayName} output`;
     collapseBtn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1816,6 +1791,8 @@ function renderResults(resultByTool) {
   });
 }
 
+// === Streaming analysis handling ===
+
 function handleMetadataMessage(msg) {
   if (msg.tool_versions && typeof msg.tool_versions === "object") {
     state.toolVersions = { ...state.toolVersions, ...msg.tool_versions };
@@ -1839,9 +1816,6 @@ function handleMetadataMessage(msg) {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(msg.python_tool_repo_paths);
   }
   ensureToolSettings();
-  // For partial runs (e.g. toggling a single tool on), the server only knows
-  // about the subset we sent — don't let its enabled_tools list overwrite the
-  // client-side state for the tools we didn't send.
   if (!state.currentOnlyTools && Array.isArray(msg.enabled_tools)) {
     const enabledSet = new Set(normalizeToolList(msg.enabled_tools));
     toolOrder.forEach((tool) => {
@@ -1856,7 +1830,6 @@ function handleMetadataMessage(msg) {
   }
 
   if (state.currentOnlyTools) {
-    // Partial run: only clear results for the tools being re-analyzed.
     for (const tool of state.currentOnlyTools) {
       delete state.lastResults[tool];
     }
@@ -1864,10 +1837,6 @@ function handleMetadataMessage(msg) {
   } else {
     state.lastResults = {};
 
-    // Avoid a full DOM rebuild if the tool list hasn't changed — just reset
-    // each card to "pending" status in place, which is much cheaper.
-    // Compare against the DOM cards (not prevToolOrder) because localStorage
-    // restore may have added tools after the initial renderResults() call.
     const renderedTools = [...resultsEl.querySelectorAll(".result-card")].map(
       (c) => c.dataset.tool,
     );
@@ -1895,7 +1864,7 @@ function resetCardsToPending() {
 
     const collapseBtn = card.querySelector(".tool-collapse");
     if (collapseBtn) {
-      collapseBtn.textContent = collapsed ? "▼" : "▲";
+      collapseBtn.textContent = collapsed ? "\u25bc" : "\u25b2";
     }
 
     const toggleBtn = card.querySelector(".tool-toggle");
@@ -2013,11 +1982,12 @@ function updateResultCard(tool, result) {
   }
 }
 
+// === Analysis ===
+
 async function analyze({ onlyTools } = {}) {
   const requestId = ++state.requestNumber;
   setStatus("Analyzing...");
 
-  // Abort previous in-flight request
   if (state.currentController) {
     state.currentController.abort();
   }
@@ -2052,7 +2022,6 @@ async function analyze({ onlyTools } = {}) {
 
     const contentType = resp.headers.get("Content-Type") || "";
 
-    // Error path: regular JSON response
     if (!resp.ok || contentType.includes("application/json")) {
       const body = await resp.json();
       if (!resp.ok) {
@@ -2069,7 +2038,6 @@ async function analyze({ onlyTools } = {}) {
 
     clearDependencyInstallError();
 
-    // NDJSON streaming path
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -2080,7 +2048,6 @@ async function analyze({ onlyTools } = {}) {
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
-      // Keep the last (possibly incomplete) chunk in the buffer
       buffer = lines.pop();
 
       for (const line of lines) {
@@ -2103,7 +2070,6 @@ async function analyze({ onlyTools } = {}) {
       }
     }
 
-    // Process any remaining buffer
     if (buffer.trim()) {
       try {
         const msg = JSON.parse(buffer.trim());
@@ -2115,7 +2081,7 @@ async function analyze({ onlyTools } = {}) {
           handleDoneMessage();
         }
       } catch {
-        // Incomplete JSON at end of stream, ignore
+        // Incomplete JSON at end of stream
       }
     }
   } catch (err) {
@@ -2131,6 +2097,8 @@ async function analyze({ onlyTools } = {}) {
     }
   }
 }
+
+// === Config file management ===
 
 function buildPyprojectContent() {
   const seen = new Set();
@@ -2164,20 +2132,27 @@ function openConfigFile(tool) {
   renderTabs();
   syncEditorFromState();
 
-  // Place the cursor at the end of the [tool.<name>] header line.
-  const content = editorEl.value;
-  const sectionIndex = content.indexOf(section);
-  if (sectionIndex >= 0) {
-    let cursorPos = sectionIndex + section.length;
-    if (content[cursorPos] === "\n") cursorPos++;
-    editorEl.focus();
-    editorEl.setSelectionRange(cursorPos, cursorPos);
-  } else {
-    editorEl.focus();
+  // Place cursor at the section header
+  if (editorView) {
+    const content = editorView.state.doc.toString();
+    const sectionIndex = content.indexOf(section);
+    if (sectionIndex >= 0) {
+      let cursorPos = sectionIndex + section.length;
+      if (content[cursorPos] === "\n") cursorPos++;
+      editorView.dispatch({
+        selection: { anchor: cursorPos },
+        effects: EditorView.scrollIntoView(cursorPos, { y: "center" }),
+      });
+      editorView.focus();
+    } else {
+      editorView.focus();
+    }
   }
 
   scheduleAnalyze();
 }
+
+// === File management ===
 
 function addFile() {
   if (state.renamingIndex >= 0) {
@@ -2230,111 +2205,9 @@ function isPythonFile() {
   return ext === ".py" || ext === ".pyi";
 }
 
+// === Event bindings ===
+
 function bindEvents() {
-  editorEl.addEventListener("input", (event) => {
-    const content = event.target.value;
-    refreshHighlight(content);
-    updateActiveFileContent(content);
-    updateColGuideCursor();
-  });
-
-  editorEl.addEventListener("keydown", (event) => {
-    if (!isPythonFile()) return;
-
-    // Tab / Shift+Tab: indent or dedent selected lines
-    if (event.key === "Tab") {
-      const val = editorEl.value;
-      const start = editorEl.selectionStart;
-      const end = editorEl.selectionEnd;
-
-      // Find the start of the first selected line and end of the last
-      const blockStart = val.lastIndexOf("\n", start - 1) + 1;
-      const blockEnd = val.indexOf("\n", end - (end > start && val[end - 1] === "\n" ? 1 : 0));
-      const blockEndFinal = blockEnd < 0 ? val.length : blockEnd;
-      const block = val.slice(blockStart, blockEndFinal);
-      const lines = block.split("\n");
-
-      let newLines;
-      let deltaFirst = 0; // change in length of first line (for selectionStart adjustment)
-      let deltaTotal = 0; // total change in length (for selectionEnd adjustment)
-
-      if (event.shiftKey) {
-        // Dedent: remove up to 4 leading spaces (or one tab) from each line
-        newLines = lines.map((line, i) => {
-          const m = line.match(/^( {1,4}|\t)/);
-          const removed = m ? m[0].length : 0;
-          if (i === 0) deltaFirst = -removed;
-          deltaTotal -= removed;
-          return removed > 0 ? line.slice(removed) : line;
-        });
-      } else {
-        // Indent: add 4 spaces to the start of each line
-        newLines = lines.map((line, i) => {
-          if (i === 0) deltaFirst = 4;
-          deltaTotal += 4;
-          return "    " + line;
-        });
-      }
-
-      event.preventDefault();
-      const newBlock = newLines.join("\n");
-
-      // Replace the block range by selecting it, then using execCommand for undo support
-      editorEl.setSelectionRange(blockStart, blockEndFinal);
-      document.execCommand("insertText", false, newBlock);
-
-      // Restore selection over the modified lines
-      const newStart = Math.max(blockStart, start + deltaFirst);
-      const newEnd = Math.max(newStart, end + deltaTotal);
-      editorEl.setSelectionRange(newStart, newEnd);
-      return;
-    }
-
-    // Enter: autoindent
-    if (event.key === "Enter") {
-      const val = editorEl.value;
-      const pos = editorEl.selectionStart;
-
-      // Find the current line (text from the previous newline up to cursor)
-      const lineStart = val.lastIndexOf("\n", pos - 1) + 1;
-      const lineText = val.slice(lineStart, pos);
-
-      // Current line's leading whitespace
-      const indentMatch = lineText.match(/^[ \t]*/);
-      const currentIndent = indentMatch ? indentMatch[0] : "";
-
-      // Determine the stripped line content (ignoring comments)
-      const stripped = lineText.replace(/#.*$/, "").trimEnd();
-
-      let newIndent = currentIndent;
-      if (stripped.endsWith(":")) {
-        // Increase indent after colon (def, class, if, for, while, with, try, etc.)
-        newIndent = currentIndent + "    ";
-      } else if (/^[ \t]*(return|break|continue|pass|raise)\b/.test(lineText)) {
-        // Dedent after block-terminating keywords
-        if (currentIndent.length >= 4) {
-          newIndent = currentIndent.slice(4);
-        } else {
-          newIndent = "";
-        }
-      }
-
-      event.preventDefault();
-      const insertion = "\n" + newIndent;
-      // Use execCommand so the insertion is undoable (Ctrl+Z)
-      document.execCommand("insertText", false, insertion);
-    }
-  });
-
-  editorEl.addEventListener("scroll", () => {
-    syncHighlightScroll();
-    updateEditorOverflowFade();
-  });
-
-  editorEl.addEventListener("keyup", updateColGuideCursor);
-  editorEl.addEventListener("click", updateColGuideCursor);
-  editorEl.addEventListener("select", updateColGuideCursor);
-
   depsInputEl.addEventListener("input", () => {
     updateDependenciesFromInput({ triggerAnalyze: true });
   });
@@ -2375,6 +2248,8 @@ function bindEvents() {
     updatePythonToolRepoPathFromInput("pycroscope", pycroscopeRepoPathEl, { triggerAnalyze: true });
   });
 }
+
+// === Bootstrap ===
 
 function loadFromBootstrap(body) {
   clearDependencyInstallError();
@@ -2468,7 +2343,6 @@ async function bootstrap() {
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
 
-  // Restore persisted editor state (files, dependencies, active tab) from localStorage
   const saved = loadSavedState();
   if (saved) {
     state.files = saved.files;
@@ -2478,8 +2352,6 @@ async function bootstrap() {
     state.ruffRepoPath = saved.ruffRepoPath;
     ruffRepoPathEl.value = state.ruffRepoPath;
     if (saved.toolOrder) {
-      // Merge saved order with current toolOrder: keep saved order for tools
-      // that still exist, append any new tools from the server.
       const currentSet = new Set(toolOrder);
       const merged = saved.toolOrder.filter((t) => currentSet.has(t));
       const mergedSet = new Set(merged);
@@ -2501,6 +2373,12 @@ async function bootstrap() {
     ensureToolSettings();
   }
 
+  // Create the CM6 editor
+  const cmContainer = document.getElementById("cm-editor");
+  if (cmContainer) {
+    createEditor(cmContainer);
+  }
+
   bindEvents();
   renderTabs();
   syncEditorFromState();
@@ -2508,24 +2386,23 @@ async function bootstrap() {
   analyze();
 }
 
-// Reset editor-wrap inline height when crossing the 980px breakpoint so CSS
-// media-query defaults take effect cleanly after a user resize.
+// === Resize handlers ===
+
+// Reset editor-wrap inline height when crossing the 980px breakpoint
 (function initEditorBreakpointReset() {
   const mql = window.matchMedia("(max-width: 980px)");
   const editorWrap = document.querySelector(".editor-wrap");
 
   mql.addEventListener("change", (e) => {
     if (e.matches) {
-      // Entered small-screen mode: shrink to CSS min-height (120px)
       editorWrap.style.height = "120px";
     } else {
-      // Entered medium/large-screen mode: clear inline height so grid stretch applies
       editorWrap.style.height = "";
     }
   });
 })();
 
-// Drag-to-resize the bottom edge of the editor panel (small screens only).
+// Drag-to-resize the bottom edge of the editor panel (small screens only)
 (function initEditorResize() {
   const handle = document.getElementById("editor-resize-handle");
   const editorWrap = document.querySelector(".editor-wrap");
@@ -2566,7 +2443,7 @@ async function bootstrap() {
   }
 })();
 
-// Drag-to-resize the bottom edge of a result card.
+// Drag-to-resize the bottom edge of a result card
 function initCardResize(handle, card) {
   let dragging = false;
   let startY = 0;
@@ -2603,14 +2480,13 @@ function initCardResize(handle, card) {
   }
 }
 
-// Drag-to-resize panel divider between editor and results panels.
+// Drag-to-resize panel divider between editor and results panels
 (function initPanelResize() {
   const PANEL_RATIO_KEY = "multiplay_panel_ratio";
   const divider = document.getElementById("panel-divider");
   const container = document.querySelector(".container");
   if (!divider || !container) return;
 
-  // Restore saved ratio
   const saved = localStorage.getItem(PANEL_RATIO_KEY);
   if (saved) {
     const ratio = parseFloat(saved);
@@ -2625,7 +2501,6 @@ function initCardResize(handle, card) {
   let dragging = false;
 
   function onPointerDown(e) {
-    // Only on wide screens where the divider is visible
     if (window.innerWidth < 981) return;
     e.preventDefault();
     dragging = true;
@@ -2640,7 +2515,6 @@ function initCardResize(handle, card) {
     if (!dragging) return;
     const rect = container.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    // Clamp ratio between 20% and 80%
     const ratio = Math.min(0.8, Math.max(0.2, x / rect.width));
     applyRatio(ratio);
   }
@@ -2654,7 +2528,6 @@ function initCardResize(handle, card) {
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerup", onPointerUp);
 
-    // Persist the current ratio
     const left = container.style.getPropertyValue("--left-panel-fr");
     if (left) {
       try { localStorage.setItem(PANEL_RATIO_KEY, parseFloat(left)); } catch {}
@@ -2663,7 +2536,6 @@ function initCardResize(handle, card) {
 
   divider.addEventListener("pointerdown", onPointerDown);
 
-  // Double-click resets to default
   divider.addEventListener("dblclick", () => {
     container.style.removeProperty("--left-panel-fr");
     container.style.removeProperty("--right-panel-fr");
@@ -2671,9 +2543,7 @@ function initCardResize(handle, card) {
   });
 })();
 
-// Forward wheel events from non-scrollable left-column elements to the results
-// panel so trackpad scrolling over the config/tabs/editor area scrolls results
-// when those elements have no scrollbar of their own.
+// Forward wheel events from non-scrollable left-column elements to the results panel
 (function initLeftColumnScrollForwarding() {
   const targets = document.querySelectorAll(".header-config, .tabs-wrap");
   targets.forEach((el) => {
@@ -2684,14 +2554,17 @@ function initCardResize(handle, card) {
     }, { passive: false });
   });
 
-  // Editor area: forward to results only when the editor has no scrollbar.
   const editorWrap = document.querySelector(".editor-wrap");
   editorWrap.addEventListener("wheel", (e) => {
     if (window.innerWidth < 981) return;
-    if (editorEl.scrollHeight > editorEl.clientHeight) return;
+    // With CM6, check if the editor's scroller has overflow
+    const scroller = editorWrap.querySelector(".cm-scroller");
+    if (scroller && scroller.scrollHeight > scroller.clientHeight) return;
     resultsEl.scrollBy({ left: e.deltaX, top: e.deltaY });
     e.preventDefault();
   }, { passive: false, capture: true });
 })();
+
+// === Start ===
 
 bootstrap();

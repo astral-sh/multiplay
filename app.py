@@ -75,6 +75,196 @@ PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 2
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
+TY_LSP: TyLanguageServer | None = None
+
+
+def _get_ty_lsp() -> TyLanguageServer:
+    global TY_LSP
+    if TY_LSP is None:
+        TY_LSP = TyLanguageServer()
+    return TY_LSP
+
+
+class TyLanguageServer:
+    """Manages a ``ty server`` (LSP) subprocess for code completion."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[bytes] | None = None
+        self._request_id = 0
+        self._initialized = False
+        self._open_documents: dict[str, int] = {}  # uri -> version
+
+    # ------------------------------------------------------------------
+    # Process management
+    # ------------------------------------------------------------------
+
+    def _start(self) -> None:
+        env = _command_env()
+        venv_python = _venv_python_path(PROJECT_DIR)
+        overrides = _venv_env_overrides(venv_python)
+        if overrides:
+            env.update(overrides)
+        self._process = subprocess.Popen(
+            ["ty", "server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=str(PROJECT_DIR),
+        )
+        self._initialized = False
+        self._open_documents = {}
+        self._request_id = 0
+
+    # ------------------------------------------------------------------
+    # JSON-RPC transport (Content-Length framed)
+    # ------------------------------------------------------------------
+
+    def _send_message(self, message: dict[str, Any]) -> None:
+        assert self._process is not None and self._process.stdin is not None
+        body = json.dumps(message).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        self._process.stdin.write(header + body)
+        self._process.stdin.flush()
+
+    def _read_message(self) -> dict[str, Any]:
+        assert self._process is not None and self._process.stdout is not None
+        headers: dict[str, str] = {}
+        while True:
+            line = self._process.stdout.readline()
+            if not line or line.strip() == b"":
+                break
+            decoded = line.decode("ascii")
+            if ":" in decoded:
+                key, value = decoded.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
+        content_length = int(headers.get("content-length", "0"))
+        if content_length == 0:
+            raise RuntimeError("Empty message from ty server")
+        body = self._process.stdout.read(content_length)
+        return json.loads(body.decode("utf-8"))
+
+    def _send_request(self, method: str, params: dict[str, Any]) -> Any:
+        self._request_id += 1
+        request_id = self._request_id
+        self._send_message({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        })
+        while True:
+            msg = self._read_message()
+            if "id" in msg and msg["id"] == request_id:
+                if "error" in msg:
+                    raise RuntimeError(f"LSP error: {msg['error']}")
+                return msg.get("result")
+            # Skip server-initiated notifications
+
+    def _send_notification(self, method: str, params: dict[str, Any]) -> None:
+        self._send_message({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        })
+
+    # ------------------------------------------------------------------
+    # LSP lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_initialized(self) -> None:
+        if self._initialized:
+            if self._process is not None and self._process.poll() is not None:
+                self._process = None
+                self._initialized = False
+                self._open_documents = {}
+            else:
+                return
+        if self._process is None:
+            self._start()
+        self._send_request("initialize", {
+            "processId": os.getpid(),
+            "capabilities": {},
+            "rootUri": PROJECT_DIR.as_uri(),
+            "rootPath": str(PROJECT_DIR),
+        })
+        self._send_notification("initialized", {})
+        self._initialized = True
+
+    def _sync_files(self, files: list[dict[str, Any]]) -> None:
+        for entry in files:
+            name = str(entry.get("name", ""))
+            content = str(entry.get("content", ""))
+            uri = (PROJECT_DIR / name).as_uri()
+            ext = Path(name).suffix
+            language_id = "python" if ext in (".py", ".pyi") else "plaintext"
+            if uri not in self._open_documents:
+                self._open_documents[uri] = 1
+                self._send_notification("textDocument/didOpen", {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": language_id,
+                        "version": 1,
+                        "text": content,
+                    },
+                })
+            else:
+                self._open_documents[uri] += 1
+                self._send_notification("textDocument/didChange", {
+                    "textDocument": {"uri": uri, "version": self._open_documents[uri]},
+                    "contentChanges": [{"text": content}],
+                })
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def complete(self, files: list[dict[str, Any]], filename: str, line: int, col: int) -> list[dict[str, Any]]:
+        with self._lock:
+            self._ensure_initialized()
+            self._sync_files(files)
+            uri = (PROJECT_DIR / filename).as_uri()
+            result = self._send_request("textDocument/completion", {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": col},
+            })
+            if result is None:
+                return []
+            items = result if isinstance(result, list) else result.get("items", [])
+            return [
+                {
+                    "label": item.get("label", ""),
+                    "kind": item.get("kind"),
+                    "detail": item.get("detail", ""),
+                    "sortText": item.get("sortText", ""),
+                    "insertText": item.get("insertText", ""),
+                    "filterText": item.get("filterText", ""),
+                    "additionalTextEdits": item.get("additionalTextEdits", []),
+                }
+                for item in items
+            ]
+
+    def shutdown(self) -> None:
+        with self._lock:
+            if self._process is None:
+                return
+            try:
+                self._send_request("shutdown", {})
+                self._send_notification("exit", {})
+            except Exception:
+                pass
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
+            self._initialized = False
+            self._open_documents = {}
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -952,6 +1142,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._handle_share()
             return
 
+        if path == "/api/complete":
+            self._handle_complete()
+            return
+
         if path != "/api/analyze":
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -1041,6 +1235,32 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Unexpected error: {exc}"})
 
+    def _handle_complete(self) -> None:
+        try:
+            body = self._read_json_body()
+            files = body.get("files")
+            if not isinstance(files, list):
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "'files' must be a list"})
+                return
+            filename = body.get("filename", "")
+            if not isinstance(filename, str) or not filename:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "'filename' is required"})
+                return
+            ext = Path(filename).suffix
+            if ext not in (".py", ".pyi"):
+                _json_response(self, HTTPStatus.OK, {"items": []})
+                return
+            line = body.get("line", 0)
+            column = body.get("column", 0)
+            if not isinstance(line, int) or not isinstance(column, int):
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "'line' and 'column' must be integers"})
+                return
+            lsp = _get_ty_lsp()
+            items = lsp.complete(files, filename, line, column)
+            _json_response(self, HTTPStatus.OK, {"items": items})
+        except Exception:
+            _json_response(self, HTTPStatus.OK, {"items": []})
+
     def _handle_share(self) -> None:
         try:
             body = self._read_json_body()
@@ -1120,6 +1340,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
+        if TY_LSP is not None:
+            TY_LSP.shutdown()
         # On Windows, temp directories aren't automatically cleaned up.
         if os.name == "nt":
             shutil.rmtree(PROJECT_DIR, ignore_errors=True)
