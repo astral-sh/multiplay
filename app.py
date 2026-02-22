@@ -49,14 +49,14 @@ class ToolSpec:
 
 
 TOOL_SPECS = [
-    ToolSpec("ty", ["ty", "check", "."], ["ty", "--version"]),
-    ToolSpec("pyright", ["pyright", "--outputjson", "."], ["pyright", "--version"]),
-    ToolSpec("pyrefly", ["pyrefly", "check", "."], ["pyrefly", "--version"]),
-    ToolSpec("mypy", ["mypy", "--color-output", "--pretty", "."], ["mypy", "--version"]),
-    ToolSpec("zuban", ["zuban", "check", "--pretty", "."], ["zuban", "--version"]),
+    ToolSpec("ty", ["ty", "check"], ["ty", "--version"]),
+    ToolSpec("pyright", ["pyright", "--outputjson"], ["pyright", "--version"]),
+    ToolSpec("pyrefly", ["pyrefly", "check"], ["pyrefly", "--version"]),
+    ToolSpec("mypy", ["mypy", "--color-output", "--pretty"], ["mypy", "--version"]),
+    ToolSpec("zuban", ["zuban", "check", "--pretty"], ["zuban", "--version"]),
     ToolSpec(
         "pycroscope",
-        ["pycroscope", "--output-format", "concise", "."],
+        ["pycroscope", "--output-format", "concise"],
         ["python", "-c", "import importlib.metadata as m; print(m.version('pycroscope'))"],
     ),
 ]
@@ -390,12 +390,6 @@ def _run_uv_pip_install(project_dir: Path, dependencies: list[str], timeout_seco
     }
 
 
-def _insert_flag_before_target(command: list[str], flag: str, value: str) -> list[str]:
-    if command and command[-1] == ".":
-        return [*command[:-1], flag, value, command[-1]]
-    return [*command, flag, value]
-
-
 def _command_for_local_python_tool(spec: ToolSpec, repo_path: Path) -> list[str]:
     if not spec.command:
         return list(spec.command)
@@ -416,25 +410,20 @@ def _command_for_tool(
         else list(spec.command)
     )
 
-    # Zuban and pycroscope don't exclude .venv when scanning ".", so pass explicit files.
-    if spec.name in ("zuban", "pycroscope") and file_paths and command and command[-1] == ".":
-        py_files = [f for f in file_paths if f.endswith(".py")]
-        if py_files:
-            command = [*command[:-1], *py_files]
-
-    if venv_python is None:
-        return command
-
     # Tools are installed into the venv. Run them with the venv's Python via
     # "python -m <tool>" so they can resolve imports from installed packages.
-    if repo_path is None and command:
+    if venv_python is not None and repo_path is None and command:
         if spec.name == "zuban":
             # zuban doesn't support "python -m zuban"; run the bin entry point
             # with --python-executable so it knows where to find dependencies.
-            return _insert_flag_before_target(command, "--python-executable", str(venv_python))
-        command = [str(venv_python), "-m", command[0], *command[1:]]
+            command = [*command, "--python-executable", str(venv_python)]
+        else:
+            command = [str(venv_python), "-m", command[0], *command[1:]]
 
-    return command
+    # Pass explicit files so that zuban/pycroscope don't type-check the venv.
+    # The other type checkers handle "." fine, but explicit files work for all.
+    py_files = [f for f in (file_paths or []) if f.endswith(".py")]
+    return [*command, *(py_files or ["."])]
 
 
 def _run_command(
