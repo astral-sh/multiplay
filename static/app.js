@@ -1697,6 +1697,8 @@ function renderResults(resultByTool) {
       if (!current.enabled) {
         current.collapsed = true;
         delete state.lastResults[tool];
+      } else {
+        current.collapsed = false;
       }
       saveState();
       renderResults(state.lastResults);
