@@ -1404,6 +1404,18 @@ function renderResults(resultByTool) {
       header.draggable = true;
     });
 
+    header.addEventListener("click", (event) => {
+      const overText =
+        event.target !== header &&
+        event.target !== grip &&
+        !event.target.classList.contains("result-header");
+      if (overText) return;
+      const current = state.toolSettings[tool];
+      if (!current) return;
+      current.collapsed = !current.collapsed;
+      renderResults(state.lastResults);
+    });
+
     header.addEventListener("dragstart", (event) => {
       draggedTool = tool;
       card.classList.add("dragging");
