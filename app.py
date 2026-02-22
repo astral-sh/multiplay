@@ -632,8 +632,9 @@ def _venv_env_overrides(venv_python: Path | None) -> dict[str, str] | None:
     }
 
 
-def _ruff_ty_command(project_dir: Path, venv_python: Path | None) -> list[str]:
-    command = ["cargo", "run", "--bin", "ty", "--", "check", "--project", str(project_dir)]
+def _ruff_ty_command(ruff_repo_path: Path, venv_python: Path | None) -> list[str]:
+    manifest = ruff_repo_path / "Cargo.toml"
+    command = ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--bin", "ty", "--", "check"]
     if venv_python is not None:
         command.extend(["--python", str(venv_python)])
     return command
@@ -647,8 +648,8 @@ def _run_ruff_ty_from_repo(
 ) -> dict[str, Any]:
     return _run_command(
         RUFF_TY_TOOL_NAME,
-        _ruff_ty_command(project_dir, venv_python),
-        ruff_repo_path,
+        _ruff_ty_command(ruff_repo_path, venv_python),
+        project_dir,
         timeout_seconds,
         _venv_env_overrides(venv_python),
     )
