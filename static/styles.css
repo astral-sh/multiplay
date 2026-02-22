@@ -581,7 +581,10 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  resize: vertical;
+}
+
+.editor-wrap .resize-handle {
+  display: none;
 }
 
 .editor-shell {
@@ -589,6 +592,50 @@ textarea {
   flex: 1;
   min-height: 200px;
   min-width: 0;
+}
+
+.editor-overflow-fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  background: linear-gradient(to bottom, transparent 0%, var(--editor-bg) 85%);
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.editor-shell.has-overflow-below .editor-overflow-fade {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.editor-expand-btn {
+  all: unset;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  width: 24px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  background: var(--editor-bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  transition: color 0.15s, background 0.15s;
+}
+
+.editor-expand-btn:hover {
+  color: var(--fg);
+  background: var(--header-bg);
 }
 
 #line-numbers {
@@ -733,6 +780,10 @@ textarea {
   flex-direction: column;
   flex-shrink: 0;
   position: relative;
+}
+
+.result-card {
+  resize: vertical;
 }
 
 .result-card .resize-handle {
@@ -1037,6 +1088,37 @@ textarea {
   .editor-wrap {
     height: 30vh;
     min-height: 120px;
+    resize: vertical;
+  }
+
+  .editor-shell {
+    min-height: 0;
+  }
+
+  .editor-wrap .resize-handle {
+    display: block;
+    height: 6px;
+    cursor: ns-resize;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .editor-wrap .resize-handle::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 32px;
+    height: 3px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background 0.15s;
+  }
+
+  .editor-wrap .resize-handle:hover::before,
+  .editor-wrap.resizing .resize-handle::before {
+    background: var(--muted);
   }
 
   #tabs {
