@@ -88,11 +88,20 @@
     <div class="workspace">
       <div class="editor-wrap">
         <div class="editor-shell">
-          <div id="line-numbers" aria-hidden="true"></div>
-          <pre id="highlight" aria-hidden="true"></pre>
-          <textarea id="editor" spellcheck="false" wrap="off"></textarea>
-          <div id="editor-overflow-fade" class="editor-overflow-fade">
-            <button id="editor-expand-btn" class="editor-expand-btn" title="Expand to fit content">&#8595;</button>
+          <div id="col-guide-wrap" class="col-guide-wrap collapsed" aria-hidden="true">
+            <button id="col-guide-toggle" class="col-guide-toggle" title="Toggle column guide">#</button>
+            <div class="col-guide-bar">
+              <div id="col-guide" class="col-guide"></div>
+              <div id="col-guide-cursor" class="col-guide-cursor"></div>
+            </div>
+          </div>
+          <div class="editor-body">
+            <div id="line-numbers" aria-hidden="true"></div>
+            <pre id="highlight" aria-hidden="true"></pre>
+            <textarea id="editor" spellcheck="false" wrap="off"></textarea>
+            <div id="editor-overflow-fade" class="editor-overflow-fade">
+              <button id="editor-expand-btn" class="editor-expand-btn" title="Expand to fit content">&#8595;</button>
+            </div>
           </div>
         </div>
         <div class="resize-handle" id="editor-resize-handle"></div>

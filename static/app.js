@@ -128,6 +128,10 @@ const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
 const lineNumbersEl = document.getElementById("line-numbers");
 const highlightEl = document.getElementById("highlight");
 const editorEl = document.getElementById("editor");
+const colGuideWrapEl = document.getElementById("col-guide-wrap");
+const colGuideEl = document.getElementById("col-guide");
+const colGuideCursorEl = document.getElementById("col-guide-cursor");
+const colGuideToggleEl = document.getElementById("col-guide-toggle");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const tempDirEl = document.getElementById("temp-dir");
@@ -888,6 +892,7 @@ function syncHighlightScroll() {
   highlightEl.scrollTop = editorEl.scrollTop;
   highlightEl.scrollLeft = editorEl.scrollLeft;
   lineNumbersEl.scrollTop = editorEl.scrollTop;
+  if (typeof syncColGuideScroll === "function") syncColGuideScroll();
 }
 
 function updateEditorOverflowFade() {
@@ -948,6 +953,91 @@ lineNumbersEl.addEventListener("wheel", (event) => {
   editorEl.scrollLeft += event.deltaX;
   event.preventDefault();
 }, { passive: false });
+
+// Column guide
+let colGuideCharWidth = 0;
+
+function measureCharWidth() {
+  const span = document.createElement("span");
+  span.style.cssText = `
+    position: absolute; visibility: hidden; white-space: pre;
+    font-family: ${getComputedStyle(editorEl).fontFamily};
+    font-size: ${getComputedStyle(editorEl).fontSize};
+  `;
+  span.textContent = "X".repeat(100);
+  document.body.appendChild(span);
+  colGuideCharWidth = span.offsetWidth / 100;
+  span.remove();
+}
+
+function renderColumnGuide() {
+  if (!colGuideCharWidth) measureCharWidth();
+  const totalCols = 200;
+  let html = "";
+  for (let c = 1; c <= totalCols; c++) {
+    const x = (c - 1) * colGuideCharWidth;
+    if (c % 10 === 0) {
+      html += `<span class="cg-num" style="left:${x - colGuideCharWidth * 1.5}px;width:${colGuideCharWidth * 3}px">${c}</span>`;
+      html += `<span class="cg-tick major" style="left:${x}px"></span>`;
+    } else if (c % 5 === 0) {
+      html += `<span class="cg-tick major" style="left:${x}px"></span>`;
+    } else {
+      html += `<span class="cg-tick" style="left:${x}px"></span>`;
+    }
+  }
+  colGuideEl.innerHTML = html;
+}
+
+function syncColGuideScroll() {
+  colGuideEl.style.transform = `translateX(${-editorEl.scrollLeft}px)`;
+  updateColGuideCursorPosition();
+}
+
+let lastCursorCol = 1;
+
+function getCursorColumn() {
+  const pos = editorEl.selectionStart;
+  const text = editorEl.value;
+  const lineStart = text.lastIndexOf("\n", pos - 1) + 1;
+  return pos - lineStart + 1;
+}
+
+function updateColGuideCursorPosition() {
+  if (colGuideWrapEl.classList.contains("collapsed")) return;
+  if (!colGuideCharWidth) measureCharWidth();
+  const x = (lastCursorCol - 1) * colGuideCharWidth - editorEl.scrollLeft;
+  colGuideCursorEl.style.left = `calc(var(--gutter-width, 36px) + 12px + ${x}px)`;
+}
+
+function updateColGuideCursor() {
+  if (colGuideWrapEl.classList.contains("collapsed")) return;
+  lastCursorCol = getCursorColumn();
+  colGuideCursorEl.textContent = lastCursorCol;
+  colGuideCursorEl.hidden = false;
+  updateColGuideCursorPosition();
+
+  // Hide static numbers that would overlap with the cursor indicator
+  const cursorDigits = String(lastCursorCol).length;
+  colGuideEl.querySelectorAll(".cg-num").forEach((el) => {
+    const staticCol = parseInt(el.textContent, 10);
+    const staticDigits = String(staticCol).length;
+    const minDist = (cursorDigits + staticDigits) / 2 + 1;
+    el.style.visibility = Math.abs(lastCursorCol - staticCol) < minDist ? "hidden" : "";
+  });
+}
+
+colGuideToggleEl.addEventListener("click", () => {
+  const collapsed = colGuideWrapEl.classList.toggle("collapsed");
+  localStorage.setItem("colGuideCollapsed", collapsed ? "1" : "0");
+  if (!collapsed) updateColGuideCursor();
+});
+
+// Restore collapse state (default collapsed)
+if (localStorage.getItem("colGuideCollapsed") === "0") {
+  colGuideWrapEl.classList.remove("collapsed");
+}
+
+renderColumnGuide();
 
 resultsEl.addEventListener("click", (event) => {
   const link = event.target.closest(".loc-link");
@@ -1810,12 +1900,17 @@ function bindEvents() {
     const content = event.target.value;
     refreshHighlight(content);
     updateActiveFileContent(content);
+    updateColGuideCursor();
   });
 
   editorEl.addEventListener("scroll", () => {
     syncHighlightScroll();
     updateEditorOverflowFade();
   });
+
+  editorEl.addEventListener("keyup", updateColGuideCursor);
+  editorEl.addEventListener("click", updateColGuideCursor);
+  editorEl.addEventListener("select", updateColGuideCursor);
 
   depsInputEl.addEventListener("input", () => {
     updateDependenciesFromInput({ triggerAnalyze: true });
