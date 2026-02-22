@@ -887,6 +887,26 @@ function syncHighlightScroll() {
   lineNumbersEl.scrollTop = editorEl.scrollTop;
 }
 
+function updateEditorOverflowFade() {
+  const shell = editorEl.closest(".editor-shell");
+  if (!shell) return;
+  const hasMore = editorEl.scrollHeight - editorEl.scrollTop - editorEl.clientHeight > 1;
+  shell.classList.toggle("has-overflow-below", hasMore);
+}
+
+new ResizeObserver(updateEditorOverflowFade).observe(editorEl);
+
+document.getElementById("editor-expand-btn").addEventListener("click", () => {
+  const wrap = document.querySelector(".editor-wrap");
+  // Expand so the editor's scroll content fits without scrolling
+  const overflow = editorEl.scrollHeight - editorEl.clientHeight;
+  if (overflow > 0) {
+    const current = wrap.getBoundingClientRect().height;
+    wrap.style.height = (current + overflow) + "px";
+    updateEditorOverflowFade();
+  }
+});
+
 function updateLineNumbers(source) {
   const lineCount = source ? source.split("\n").length : 1;
   let html = "";
@@ -951,6 +971,7 @@ function refreshHighlight(content) {
   highlightEl.innerHTML = renderHighlightedCode(source, filename);
   updateLineNumbers(source);
   syncHighlightScroll();
+  updateEditorOverflowFade();
 }
 
 function renderTabs() {
@@ -1748,6 +1769,7 @@ function bindEvents() {
 
   editorEl.addEventListener("scroll", () => {
     syncHighlightScroll();
+    updateEditorOverflowFade();
   });
 
   depsInputEl.addEventListener("input", () => {
@@ -1912,6 +1934,47 @@ async function bootstrap() {
       editorWrap.style.height = "";
     }
   });
+})();
+
+// Drag-to-resize the bottom edge of the editor panel (small screens only).
+(function initEditorResize() {
+  const handle = document.getElementById("editor-resize-handle");
+  const editorWrap = document.querySelector(".editor-wrap");
+  if (!handle || !editorWrap) return;
+
+  let dragging = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  handle.addEventListener("pointerdown", (e) => {
+    if (window.innerWidth >= 981) return;
+    e.preventDefault();
+    dragging = true;
+    startY = e.clientY;
+    startHeight = editorWrap.getBoundingClientRect().height;
+    editorWrap.classList.add("resizing");
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
+
+  function onMove(e) {
+    if (!dragging) return;
+    const delta = e.clientY - startY;
+    const newHeight = Math.max(120, startHeight + delta);
+    editorWrap.style.height = newHeight + "px";
+  }
+
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    editorWrap.classList.remove("resizing");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+  }
 })();
 
 // Drag-to-resize the bottom edge of a result card.
