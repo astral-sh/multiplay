@@ -1683,6 +1683,9 @@ function renderResults(resultByTool) {
         return;
       }
       current.enabled = !(current.enabled !== false);
+      if (!current.enabled) {
+        current.collapsed = true;
+      }
       saveState();
       renderResults(state.lastResults);
       scheduleAnalyze();
