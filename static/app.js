@@ -668,6 +668,61 @@ function ansiToHtml(text) {
   return html || escapeHtml("(no output)");
 }
 
+function linkifyLocations(html) {
+  const names = state.files.map((f) => f.name).filter(Boolean);
+  if (names.length === 0) return html;
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(
+    "(" + escaped.join("|") + "):(\\d+)(?::(\\d+))?",
+    "g",
+  );
+  // Split on HTML tags so we only replace within text nodes
+  const parts = html.split(/(<[^>]*>)/);
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].startsWith("<")) continue;
+    parts[i] = parts[i].replace(pattern, (match, file, line, col) => {
+      const dc = col ? ` data-col="${col}"` : "";
+      return `<a class="loc-link" data-file="${escapeHtml(file)}" data-line="${line}"${dc}>${match}</a>`;
+    });
+  }
+  return parts.join("");
+}
+
+function navigateToLine(line, col) {
+  const content = editorEl.value;
+  const lines = content.split("\n");
+  if (line < 1 || line > lines.length) return;
+
+  let start = 0;
+  for (let i = 0; i < line - 1; i++) {
+    start += lines[i].length + 1;
+  }
+  const clampedCol = Math.min(Math.max((col || 1) - 1, 0), lines[line - 1].length);
+  const pos = start + clampedCol;
+
+  editorEl.focus();
+  editorEl.setSelectionRange(pos, pos);
+
+  const style = getComputedStyle(editorEl);
+  const lineHeight = parseFloat(style.lineHeight) || 20;
+  const paddingTop = parseFloat(style.paddingTop) || 0;
+  const editorHeight = editorEl.clientHeight;
+  const targetScroll = (line - 1) * lineHeight - editorHeight / 2 + lineHeight / 2;
+  editorEl.scrollTop = Math.max(0, targetScroll);
+
+  // Flash the target line
+  const shell = editorEl.closest(".editor-shell");
+  if (shell) {
+    shell.querySelectorAll(".line-glow").forEach((el) => el.remove());
+    const glow = document.createElement("div");
+    glow.className = "line-glow";
+    glow.style.top = `${paddingTop + (line - 1) * lineHeight - editorEl.scrollTop}px`;
+    glow.style.height = `${lineHeight}px`;
+    shell.appendChild(glow);
+    glow.addEventListener("animationend", () => glow.remove());
+  }
+}
+
 function extensionOf(filename) {
   const name = (filename || "").trim().toLowerCase();
   const dot = name.lastIndexOf(".");
@@ -870,6 +925,24 @@ lineNumbersEl.addEventListener("wheel", (event) => {
   editorEl.scrollLeft += event.deltaX;
   event.preventDefault();
 }, { passive: false });
+
+resultsEl.addEventListener("click", (event) => {
+  const link = event.target.closest(".loc-link");
+  if (!link) return;
+  event.preventDefault();
+  const fileName = link.dataset.file;
+  const line = parseInt(link.dataset.line, 10);
+  const col = link.dataset.col ? parseInt(link.dataset.col, 10) : 1;
+  const fileIndex = state.files.findIndex((f) => f.name === fileName);
+  if (fileIndex < 0) return;
+  if (state.activeIndex !== fileIndex) {
+    state.activeIndex = fileIndex;
+    syncEditorFromState();
+    renderTabs();
+    saveState();
+  }
+  navigateToLine(line, col);
+});
 
 function refreshHighlight(content) {
   const file = activeFile();
@@ -1458,7 +1531,7 @@ function renderResults(resultByTool) {
       pre.textContent = "Tool is turned off for this analysis.";
     } else {
       const output = typeof result.output === "string" ? result.output : "";
-      pre.innerHTML = ansiToHtml(output);
+      pre.innerHTML = linkifyLocations(ansiToHtml(output));
     }
 
     card.appendChild(header);
