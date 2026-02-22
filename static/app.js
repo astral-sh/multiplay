@@ -9,6 +9,8 @@ function saveState() {
         dependencies: state.dependencies.slice(),
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
+        toolOrder: toolOrder.slice(),
+        toolSettings: state.toolSettings,
       }),
     );
   } catch {
@@ -26,6 +28,22 @@ function loadSavedState() {
       .filter((f) => f && typeof f.name === "string" && typeof f.content === "string")
       .map((f) => ({ name: f.name, content: f.content }));
     if (files.length === 0) return null;
+    let savedToolOrder = null;
+    if (Array.isArray(data.toolOrder) && data.toolOrder.every((t) => typeof t === "string")) {
+      savedToolOrder = data.toolOrder;
+    }
+    let savedToolSettings = null;
+    if (data.toolSettings && typeof data.toolSettings === "object" && !Array.isArray(data.toolSettings)) {
+      savedToolSettings = {};
+      for (const [key, val] of Object.entries(data.toolSettings)) {
+        if (val && typeof val === "object") {
+          savedToolSettings[key] = {
+            enabled: val.enabled !== false,
+            collapsed: !!val.collapsed,
+          };
+        }
+      }
+    }
     return {
       files,
       dependencies: Array.isArray(data.dependencies)
@@ -33,6 +51,8 @@ function loadSavedState() {
         : [],
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
+      toolOrder: savedToolOrder,
+      toolSettings: savedToolSettings,
     };
   } catch {
     return null;
@@ -1549,6 +1569,7 @@ function renderResults(resultByTool) {
       }
       toolOrder.splice(toIndex, 0, draggedTool);
       draggedTool = null;
+      saveState();
       renderResults(state.lastResults);
     });
 
@@ -1576,6 +1597,7 @@ function renderResults(resultByTool) {
       const current = state.toolSettings[tool];
       if (!current) return;
       current.collapsed = !current.collapsed;
+      saveState();
       renderResults(state.lastResults);
     });
 
@@ -1640,6 +1662,7 @@ function renderResults(resultByTool) {
         return;
       }
       current.enabled = !(current.enabled !== false);
+      saveState();
       renderResults(state.lastResults);
       scheduleAnalyze();
     });
@@ -1657,6 +1680,7 @@ function renderResults(resultByTool) {
         return;
       }
       current.collapsed = !current.collapsed;
+      saveState();
       renderResults(state.lastResults);
     });
 
@@ -2185,6 +2209,27 @@ async function bootstrap() {
     depsInputEl.value = dependenciesToText(state.dependencies);
     state.ruffRepoPath = saved.ruffRepoPath;
     ruffRepoPathEl.value = state.ruffRepoPath;
+    if (saved.toolOrder) {
+      // Merge saved order with current toolOrder: keep saved order for tools
+      // that still exist, append any new tools from the server.
+      const currentSet = new Set(toolOrder);
+      const merged = saved.toolOrder.filter((t) => currentSet.has(t));
+      const mergedSet = new Set(merged);
+      for (const t of toolOrder) {
+        if (!mergedSet.has(t)) {
+          merged.push(t);
+        }
+      }
+      toolOrder = merged;
+    }
+    if (saved.toolSettings) {
+      for (const [tool, settings] of Object.entries(saved.toolSettings)) {
+        if (state.toolSettings[tool]) {
+          state.toolSettings[tool].enabled = settings.enabled;
+          state.toolSettings[tool].collapsed = settings.collapsed;
+        }
+      }
+    }
     ensureToolSettings();
   }
 
