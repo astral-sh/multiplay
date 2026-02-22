@@ -1017,6 +1017,7 @@ def main() -> None:
         raise SystemExit(f"Static directory not found: {STATIC_DIR}")
 
     args = parse_args()
+
     if not args.skip_prime:
         print("Priming tool installs...")
         version_results = _prime_tool_installs()
@@ -1038,8 +1039,19 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-        server.server_close()
-        shutil.rmtree(PROJECT_DIR, ignore_errors=True)
+        # On Windows, temp directories aren't automatically cleaned up.
+        if os.name == "nt":
+            shutil.rmtree(PROJECT_DIR, ignore_errors=True)
+        # os._exit() is a thin wrapper around the _exit(2) syscall that
+        # terminates the process immediately, skipping atexit handlers,
+        # finally blocks in other threads, and stdio buffer flushing.
+        # That's exactly what we want here: without it, interpreter
+        # shutdown blocks on concurrent.futures' _python_exit(), which
+        # joins every ThreadPoolExecutor worker thread — including any
+        # still inside subprocess.run() waiting for a child process.
+        # Skipping buffer flushing is fine because the server is
+        # stateless and we already called print() above (which flushes).
+        os._exit(0)
 
 
 if __name__ == "__main__":
