@@ -374,6 +374,7 @@ function getAnsiFgBright() {
 
 function setStatus(text) {
   statusEl.textContent = text;
+  statusEl.classList.toggle("status-busy", text === "Analyzing..." || text === "Loading...");
 }
 
 function activeFile() {
