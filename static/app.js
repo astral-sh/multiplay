@@ -90,6 +90,7 @@ const state = {
   toolSettings: {},
   lastResults: {},
   refreshVenv: false,
+  currentController: null,
 };
 
 // Server-restart auto-reload: poll /api/health and reload if the server ID changes
@@ -1621,6 +1622,7 @@ function renderResults(resultByTool) {
       meta.textContent = "exit " + code + " | " + ms + "ms";
     } else {
       meta.textContent = "pending";
+      meta.classList.add("meta-pending");
     }
 
     const toggleBtn = document.createElement("button");
@@ -1717,9 +1719,99 @@ function renderResults(resultByTool) {
   });
 }
 
+function handleMetadataMessage(msg) {
+  if (msg.tool_versions && typeof msg.tool_versions === "object") {
+    state.toolVersions = { ...state.toolVersions, ...msg.tool_versions };
+  }
+  if (Array.isArray(msg.tool_order) && msg.tool_order.length > 0) {
+    const serverOrder = normalizeToolList(msg.tool_order);
+    const serverSet = new Set(serverOrder);
+    const merged = toolOrder.filter((t) => serverSet.has(t));
+    const mergedSet = new Set(merged);
+    for (const t of serverOrder) {
+      if (!mergedSet.has(t)) {
+        merged.push(t);
+      }
+    }
+    toolOrder = merged;
+  }
+  if (typeof msg.ruff_repo_path === "string") {
+    state.ruffRepoPath = normalizeRuffRepoPath(msg.ruff_repo_path);
+    ruffRepoPathEl.value = state.ruffRepoPath;
+  }
+  if (msg.python_tool_repo_paths && typeof msg.python_tool_repo_paths === "object") {
+    state.pythonToolRepoPaths = normalizePythonToolRepoPaths(msg.python_tool_repo_paths);
+    mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
+    pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
+  }
+  ensureToolSettings();
+  if (Array.isArray(msg.enabled_tools)) {
+    const enabledSet = new Set(normalizeToolList(msg.enabled_tools));
+    toolOrder.forEach((tool) => {
+      const settings = state.toolSettings[tool];
+      if (settings) {
+        settings.enabled = enabledSet.has(tool);
+      }
+    });
+  }
+  if (typeof msg.temp_dir === "string" && msg.temp_dir) {
+    tempDirEl.textContent = "Temp directory: " + msg.temp_dir;
+  }
+
+  state.lastResults = {};
+  renderResults(state.lastResults);
+}
+
+function handleResultMessage(msg) {
+  state.lastResults[msg.tool] = msg.data;
+  updateResultCard(msg.tool, msg.data);
+}
+
+function handleDoneMessage() {
+  setStatus("Last analysis: " + new Date().toLocaleTimeString());
+}
+
+function updateResultCard(tool, result) {
+  const card = resultsEl.querySelector(`[data-tool="${tool}"]`);
+  if (!card) return;
+
+  const meta = card.querySelector(".meta");
+  if (meta) {
+    meta.classList.remove("meta-pending");
+    const settings = state.toolSettings[tool];
+    const enabled = !settings || settings.enabled !== false;
+    if (!enabled) {
+      meta.textContent = "disabled";
+    } else if (typeof result.returncode === "number") {
+      const code = result.returncode;
+      const ms = typeof result.duration_ms === "number" ? result.duration_ms : 0;
+      meta.textContent = "exit " + code + " | " + ms + "ms";
+    }
+  }
+
+  const pre = card.querySelector("pre");
+  if (pre) {
+    const settings = state.toolSettings[tool];
+    const enabled = !settings || settings.enabled !== false;
+    if (!enabled) {
+      pre.textContent = "Tool is turned off for this analysis.";
+    } else {
+      const output = typeof result.output === "string" ? result.output : "";
+      pre.innerHTML = linkifyLocations(ansiToHtml(output));
+    }
+  }
+}
+
 async function analyze() {
   const requestId = ++state.requestNumber;
   setStatus("Analyzing...");
+
+  // Abort previous in-flight request
+  if (state.currentController) {
+    state.currentController.abort();
+  }
+  const controller = new AbortController();
+  state.currentController = controller;
 
   const refreshVenv = state.refreshVenv;
   state.refreshVenv = false;
@@ -1737,70 +1829,92 @@ async function analyze() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
-    const body = await resp.json();
     if (requestId < state.latestHandledRequest) {
       return;
     }
     state.latestHandledRequest = requestId;
 
-    if (!resp.ok) {
-      if (body?.error_type === "dependency_install_failed" && body?.dependency_install) {
-        showDependencyInstallError(body.dependency_install);
-        setStatus("Dependency install failed");
+    const contentType = resp.headers.get("Content-Type") || "";
+
+    // Error path: regular JSON response
+    if (!resp.ok || contentType.includes("application/json")) {
+      const body = await resp.json();
+      if (!resp.ok) {
+        if (body?.error_type === "dependency_install_failed" && body?.dependency_install) {
+          showDependencyInstallError(body.dependency_install);
+          setStatus("Dependency install failed");
+          return;
+        }
+        clearDependencyInstallError();
+        setStatus("Request failed: " + (body.error || resp.status));
         return;
       }
-      clearDependencyInstallError();
-      setStatus("Request failed: " + (body.error || resp.status));
-      return;
     }
 
     clearDependencyInstallError();
-    if (body.tool_versions && typeof body.tool_versions === "object") {
-      state.toolVersions = { ...state.toolVersions, ...body.tool_versions };
-    }
-    if (Array.isArray(body.tool_order) && body.tool_order.length > 0) {
-      const serverOrder = normalizeToolList(body.tool_order);
-      const serverSet = new Set(serverOrder);
-      // Keep local ordering, drop tools the server no longer reports
-      const merged = toolOrder.filter((t) => serverSet.has(t));
-      const mergedSet = new Set(merged);
-      // Append any new tools from the server at the end
-      for (const t of serverOrder) {
-        if (!mergedSet.has(t)) {
-          merged.push(t);
+
+    // NDJSON streaming path
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      // Keep the last (possibly incomplete) chunk in the buffer
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let msg;
+        try {
+          msg = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+
+        if (msg.type === "metadata") {
+          handleMetadataMessage(msg);
+        } else if (msg.type === "result") {
+          handleResultMessage(msg);
+        } else if (msg.type === "done") {
+          handleDoneMessage();
         }
       }
-      toolOrder = merged;
-    }
-    if (typeof body.ruff_repo_path === "string") {
-      state.ruffRepoPath = normalizeRuffRepoPath(body.ruff_repo_path);
-      ruffRepoPathEl.value = state.ruffRepoPath;
-    }
-    if (body.python_tool_repo_paths && typeof body.python_tool_repo_paths === "object") {
-      state.pythonToolRepoPaths = normalizePythonToolRepoPaths(body.python_tool_repo_paths);
-      mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
-      pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
-    }
-    ensureToolSettings();
-    if (Array.isArray(body.enabled_tools)) {
-      const enabledSet = new Set(normalizeToolList(body.enabled_tools));
-      toolOrder.forEach((tool) => {
-        const settings = state.toolSettings[tool];
-        if (settings) {
-          settings.enabled = enabledSet.has(tool);
-        }
-      });
     }
 
-    state.lastResults = body.results && typeof body.results === "object" ? body.results : {};
-    renderResults(state.lastResults);
-    tempDirEl.textContent = "Temp directory: " + (body.temp_dir || "");
-    setStatus("Last analysis: " + new Date().toLocaleTimeString());
+    // Process any remaining buffer
+    if (buffer.trim()) {
+      try {
+        const msg = JSON.parse(buffer.trim());
+        if (msg.type === "metadata") {
+          handleMetadataMessage(msg);
+        } else if (msg.type === "result") {
+          handleResultMessage(msg);
+        } else if (msg.type === "done") {
+          handleDoneMessage();
+        }
+      } catch {
+        // Incomplete JSON at end of stream, ignore
+      }
+    }
   } catch (err) {
+    if (err.name === "AbortError") {
+      return;
+    }
     clearDependencyInstallError();
     setStatus("Error: " + err.message);
+  } finally {
+    if (state.currentController === controller) {
+      state.currentController = null;
+    }
   }
 }
 
