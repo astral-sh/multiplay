@@ -318,6 +318,8 @@ const JSON_TOKEN_RE =
   /("(?:\\.|[^"\\\n])*"\s*(?=:))|("(?:\\.|[^"\\\n])*")|(\b(?:true|false)\b)|(\bnull\b)|(\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|([{}\[\],:])/gm;
 const INI_TOKEN_RE =
   /(^\s*[;#].*$)|(^\s*\[[^\]\n]+\])|(^\s*[A-Za-z0-9_.-]+\s*(?==))|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|(\b(?:true|false|yes|no|on|off)\b)|(\b[+-]?\d+(?:\.\d+)?\b)/gim;
+const OUTPUT_MAX_LINES = 500;
+const OUTPUT_MAX_CHARS = 100_000;
 const ANSI_SGR_RE = /\u001b\[([0-9;]*)m/g;
 const ANSI_OSC_RE = /\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g;
 const ANSI_CSI_RE = /\u001b\[([0-9:;?]*)([@-~])/g;
@@ -1705,7 +1707,34 @@ function renderResults(resultByTool) {
       pre.textContent = "Tool is turned off for this analysis.";
     } else {
       const output = typeof result.output === "string" ? result.output : "";
-      pre.innerHTML = linkifyLocations(ansiToHtml(output));
+      let visible = output;
+      let truncated = false;
+      let truncMsg = "";
+      const lines = output.split("\n");
+      if (lines.length > OUTPUT_MAX_LINES) {
+        visible = lines.slice(0, OUTPUT_MAX_LINES).join("\n");
+        truncated = true;
+        truncMsg = `Output truncated (showing ${OUTPUT_MAX_LINES} of ${lines.length} lines). Click to show all.`;
+      }
+      if (visible.length > OUTPUT_MAX_CHARS) {
+        visible = visible.slice(0, OUTPUT_MAX_CHARS);
+        truncated = true;
+        truncMsg = `Output truncated (showing ~${Math.round(OUTPUT_MAX_CHARS / 1000)}k of ${Math.round(output.length / 1000)}k chars). Click to show all.`;
+      }
+      pre.innerHTML = linkifyLocations(ansiToHtml(visible));
+      if (truncated) {
+        const notice = document.createElement("div");
+        notice.className = "truncation-notice";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = truncMsg;
+        btn.addEventListener("click", () => {
+          pre.innerHTML = linkifyLocations(ansiToHtml(output));
+          notice.remove();
+        });
+        notice.appendChild(btn);
+        pre.appendChild(notice);
+      }
     }
 
     const resizeHandle = document.createElement("div");

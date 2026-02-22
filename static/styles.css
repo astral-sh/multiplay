@@ -1048,6 +1048,25 @@ textarea {
   background: var(--result-bg);
 }
 
+.truncation-notice {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.truncation-notice button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.truncation-notice button:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .loc-link {
   color: var(--accent);
   text-decoration: underline;
