@@ -170,6 +170,7 @@ const state = {
 
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
+const dependenciesConfigEl = document.getElementById("dependencies-config");
 const pythonVersionEl = document.getElementById("python-version");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
@@ -342,6 +343,7 @@ async function handleLoadGist() {
       : [];
     state.dependencies = deps;
     depsInputEl.value = dependenciesToText(state.dependencies);
+    syncDependenciesSectionOpen();
 
     saveState();
     renderTabs();
@@ -1303,6 +1305,13 @@ function dependenciesToText(dependencies) {
   return dependencies.join(", ");
 }
 
+function syncDependenciesSectionOpen() {
+  if (!dependenciesConfigEl) {
+    return;
+  }
+  dependenciesConfigEl.open = state.dependencies.length > 0;
+}
+
 function normalizeToolList(raw) {
   if (!Array.isArray(raw)) {
     return [];
@@ -1460,6 +1469,7 @@ function enabledTools() {
 function updateDependenciesFromInput({ triggerAnalyze = false } = {}) {
   const parsed = parseDependencies(depsInputEl.value);
   state.dependencies = parsed;
+  syncDependenciesSectionOpen();
   state.refreshVenv = true;
   if (triggerAnalyze) {
     scheduleAnalyze();
@@ -2516,6 +2526,7 @@ function loadFromBootstrap(body) {
     state.dependencies = [];
   }
   depsInputEl.value = dependenciesToText(state.dependencies);
+  syncDependenciesSectionOpen();
   state.pythonVersion = normalizePythonVersion(body.initial_python_version, state.pythonVersionOptions);
   pythonVersionEl.value = state.pythonVersion;
 
@@ -2549,6 +2560,7 @@ async function bootstrap() {
     ensureToolSettings();
     state.lastResults = {};
     depsInputEl.value = "";
+    syncDependenciesSectionOpen();
     pythonVersionEl.value = state.pythonVersion;
     ruffRepoPathEl.value = "";
     mypyRepoPathEl.value = "";
@@ -2563,6 +2575,7 @@ async function bootstrap() {
     state.activeIndex = Math.min(saved.activeIndex, saved.files.length - 1);
     state.dependencies = saved.dependencies;
     depsInputEl.value = dependenciesToText(state.dependencies);
+    syncDependenciesSectionOpen();
     state.pythonVersion = normalizePythonVersion(saved.pythonVersion, state.pythonVersionOptions);
     pythonVersionEl.value = state.pythonVersion;
     state.ruffRepoPath = saved.ruffRepoPath;
