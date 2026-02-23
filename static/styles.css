@@ -1244,7 +1244,7 @@ textarea {
     max-height: 320px;
   }
 
-  .editor-overflow-fade {
+  .editor-expand-btn {
     display: none;
   }
 }
