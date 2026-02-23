@@ -1243,6 +1243,10 @@ textarea {
   .result-card {
     max-height: 320px;
   }
+
+  .editor-overflow-fade {
+    display: none;
+  }
 }
 
 @media (max-width: 980px) {
