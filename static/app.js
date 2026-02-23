@@ -168,6 +168,66 @@ const state = {
   setTimeout(poll, POLL_INTERVAL_MS);
 })();
 
+// Watch a local Ruff checkout directory for source changes and auto-rerun ty_ruff.
+let _ruffDirWatchTimer = null;
+let _ruffDirLastFingerprint = null;
+
+function stopRuffDirWatcher() {
+  if (_ruffDirWatchTimer !== null) {
+    clearTimeout(_ruffDirWatchTimer);
+    _ruffDirWatchTimer = null;
+  }
+  _ruffDirLastFingerprint = null;
+}
+
+function startRuffDirWatcher() {
+  stopRuffDirWatcher();
+  const ruffPath = state.ruffRepoPath;
+  if (!ruffPath) return;
+
+  async function poll() {
+    // Stop if the path changed or ty_ruff was disabled since we started.
+    if (state.ruffRepoPath !== ruffPath) {
+      stopRuffDirWatcher();
+      return;
+    }
+    const tyRuffSettings = state.toolSettings[RUFF_TY_TOOL];
+    if (!tyRuffSettings || !tyRuffSettings.enabled) {
+      scheduleNext();
+      return;
+    }
+
+    try {
+      const resp = await fetch("/api/dir-fingerprint?path=" + encodeURIComponent(ruffPath));
+      if (!resp.ok) {
+        scheduleNext();
+        return;
+      }
+      const body = await resp.json();
+      const fingerprint = body.fingerprint;
+      if (typeof fingerprint !== "string" || !fingerprint) {
+        scheduleNext();
+        return;
+      }
+
+      if (_ruffDirLastFingerprint !== null && fingerprint !== _ruffDirLastFingerprint) {
+        scheduleAnalyze({ onlyTools: [RUFF_TY_TOOL] });
+      }
+      _ruffDirLastFingerprint = fingerprint;
+    } catch {
+      // Network error or server down — skip this cycle.
+    }
+    scheduleNext();
+  }
+
+  function scheduleNext() {
+    _ruffDirWatchTimer = setTimeout(poll, 1000);
+  }
+
+  // Seed immediately, then chain via setTimeout so polls never overlap.
+  poll();
+}
+
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
 const dependenciesConfigEl = document.getElementById("dependencies-config");
@@ -1500,6 +1560,7 @@ function updateRuffRepoPathFromInput({ triggerAnalyze, writeBack = true } = { tr
   state.ruffRepoPath = normalized;
   ensureToolSettings();
   renderResults(state.lastResults);
+  startRuffDirWatcher();
 
   if (triggerAnalyze) {
     scheduleAnalyze();
@@ -2607,6 +2668,7 @@ async function bootstrap() {
   bindEvents();
   renderTabs();
   syncEditorFromState();
+  startRuffDirWatcher();
   state.refreshVenv = true;
   analyze();
 }

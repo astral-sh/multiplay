@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 DEFAULT_FILES = [
@@ -241,6 +241,29 @@ def _normalize_ruff_repo_path(raw: Any) -> Path | None:
     if not (resolved / "Cargo.toml").is_file():
         raise ValueError(f"Ruff repo path does not look like a cargo workspace: {text!r}")
     return resolved
+
+
+def _get_dir_fingerprint(path: Path) -> str:
+    """Return a fingerprint that changes when the repo's source state changes.
+
+    Uses ``git rev-parse HEAD`` (detects branch switches, pulls, rebases) and
+    ``git status --porcelain`` (detects uncommitted edits) which are both fast
+    regardless of repo size.
+    """
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5, env=env,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10, env=env,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    return head + "\n" + status
 
 
 def _normalize_python_version(raw: Any) -> str:
@@ -960,6 +983,21 @@ class AppHandler(BaseHTTPRequestHandler):
                     "temp_dir": str(PROJECT_DIR),
                 },
             )
+            return
+
+        if path == "/api/dir-fingerprint":
+            qs = parse_qs(urlsplit(self.path).query)
+            raw_path = (qs.get("path") or [None])[0]
+            try:
+                resolved = _normalize_ruff_repo_path(raw_path)
+            except ValueError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            if resolved is None:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Missing path parameter"})
+                return
+            fingerprint = _get_dir_fingerprint(resolved)
+            _json_response(self, HTTPStatus.OK, {"fingerprint": fingerprint})
             return
 
         if path.startswith("/api/gist/"):
