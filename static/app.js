@@ -243,8 +243,8 @@ const colGuideEl = document.getElementById("col-guide");
 const colGuideCursorEl = document.getElementById("col-guide-cursor");
 const colGuideToggleEl = document.getElementById("col-guide-toggle");
 const statusEl = document.getElementById("status");
+const statusLineEl = document.getElementById("status-line");
 const resultsEl = document.getElementById("results");
-const tempDirEl = document.getElementById("temp-dir");
 const depErrorEl = document.getElementById("dep-error");
 const themeToggleEl = document.getElementById("theme-toggle");
 
@@ -490,9 +490,40 @@ function getAnsiFgBright() {
   return isDark ? ANSI_FG_BRIGHT_DARK : ANSI_FG_BRIGHT_LIGHT;
 }
 
+let _tempDirText = "";
+
 function setStatus(text) {
   statusEl.textContent = text;
   statusEl.classList.toggle("status-busy", text === "Analyzing..." || text === "Loading...");
+  _rebuildStatusLine();
+}
+
+function setTempDir(text) {
+  _tempDirText = text;
+  _rebuildStatusLine();
+}
+
+function _rebuildStatusLine() {
+  // Keep the <span id="status"> intact; append temp-dir after a separator
+  const existing = statusLineEl.querySelector(".status-sep");
+  if (existing) existing.remove();
+  const existingTd = statusLineEl.querySelector(".status-tempdir");
+  if (existingTd) existingTd.remove();
+  if (_tempDirText && statusEl.textContent) {
+    const sep = document.createElement("span");
+    sep.className = "status-sep";
+    sep.textContent = " · ";
+    statusLineEl.appendChild(sep);
+    const td = document.createElement("span");
+    td.className = "status-tempdir";
+    td.textContent = _tempDirText;
+    statusLineEl.appendChild(td);
+  } else if (_tempDirText) {
+    const td = document.createElement("span");
+    td.className = "status-tempdir";
+    td.textContent = _tempDirText;
+    statusLineEl.appendChild(td);
+  }
 }
 
 function activeFile() {
@@ -1996,7 +2027,7 @@ function handleMetadataMessage(msg) {
     });
   }
   if (typeof msg.temp_dir === "string" && msg.temp_dir) {
-    tempDirEl.textContent = "Temp directory: " + msg.temp_dir;
+    setTempDir("Temp directory: " + msg.temp_dir);
   }
 
   if (state.currentOnlyTools) {
@@ -2592,7 +2623,7 @@ function loadFromBootstrap(body) {
   pythonVersionEl.value = state.pythonVersion;
 
   if (typeof body.temp_dir === "string" && body.temp_dir) {
-    tempDirEl.textContent = "Temp directory: " + body.temp_dir;
+    setTempDir("Temp directory: " + body.temp_dir);
   }
 
   state.lastResults = {};

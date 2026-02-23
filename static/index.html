@@ -25,32 +25,20 @@
     </div>
 
     <div class="header-config">
-      <div class="deps-row">
-        <label class="deps-label" for="python-version">Python version</label>
-        <select id="python-version" class="deps-input">
-          <option value="3.10">3.10</option>
-          <option value="3.11">3.11</option>
-          <option value="3.12">3.12</option>
-          <option value="3.13">3.13</option>
-          <option value="3.14" selected>3.14</option>
-        </select>
-      </div>
-      <details class="advanced-config" id="dependencies-config">
-        <summary>Dependencies (optional)</summary>
+      <div class="config-row">
+        <details class="advanced-config" id="dependencies-config">
+        <summary>Advanced options</summary>
         <div class="advanced-config-body">
+          <label class="advanced-section-label">Dependencies</label>
           <textarea
             id="dependencies"
             class="deps-input deps-textarea"
-            rows="2"
+            rows="1"
             placeholder="requests, pydantic, types-requests"
             spellcheck="false"
           ></textarea>
           <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
-        </div>
-      </details>
-      <details class="advanced-config">
-        <summary>Local checker directories (optional)</summary>
-        <div class="advanced-config-body">
+          <label class="advanced-section-label">Local checker directories</label>
           <div class="deps-row">
             <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
             <input
@@ -86,9 +74,19 @@
           <p class="status deps-note">Runs <code>uv run --with-editable 'pycroscope @ &lt;dir&gt;' pycroscope ...</code> for the pycroscope checker.</p>
         </div>
       </details>
+        <label class="python-version-group" for="python-version">
+          <span class="python-version-label">Python</span>
+          <select id="python-version" class="deps-input python-version-select">
+            <option value="3.10">3.10</option>
+            <option value="3.11">3.11</option>
+            <option value="3.12">3.12</option>
+            <option value="3.13">3.13</option>
+            <option value="3.14" selected>3.14</option>
+          </select>
+        </label>
+      </div>
       <div id="dep-error" class="dep-error hidden" role="alert" aria-live="polite"></div>
-      <p class="status" id="status">Loading...</p>
-      <p class="status" id="temp-dir"></p>
+      <p class="status status-compact" id="status-line"><span id="status">Loading...</span></p>
     </div>
 
     <div class="tabs-wrap">

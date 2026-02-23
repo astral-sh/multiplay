@@ -199,7 +199,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: var(--shadow);
-  padding: 14px 16px;
+  padding: 10px 16px;
 }
 
 h1 {
@@ -236,6 +236,39 @@ h1 {
 .header-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.config-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.config-row .advanced-config {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.python-version-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  cursor: pointer;
+  white-space: nowrap;
+  height: 34px;
+}
+
+.python-version-label {
+  font-size: 0.88rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.python-version-select {
+  padding: 4px 6px;
+  border-radius: 999px;
+  font-size: 0.86rem;
 }
 
 .gist-load-group {
@@ -310,7 +343,11 @@ h1 {
 .status {
   margin: 0;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.82rem;
+}
+
+.status-compact {
+  margin-top: 16px;
 }
 
 .status-busy::before {
@@ -375,7 +412,7 @@ h1 {
 
 .deps-textarea {
   width: 100%;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   box-sizing: border-box;
 }
 
@@ -386,12 +423,41 @@ h1 {
 }
 
 .deps-note {
-  margin-bottom: 6px;
+  margin-bottom: 0;
 }
 
 .deps-note code {
   font-family: var(--mono);
   font-size: 0.86em;
+}
+
+.advanced-section-label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.deps-note + .advanced-section-label {
+  margin-bottom: 4px;
+}
+
+.advanced-section-label + .deps-textarea {
+  margin-top: 0;
+}
+
+.advanced-section-label + .advanced-section-label,
+.deps-note + .advanced-section-label {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-section-label ~ .deps-row {
+  margin-top: 12px;
 }
 
 .advanced-config {
@@ -415,7 +481,7 @@ h1 {
 
 .advanced-config-body {
   border-top: 1px solid var(--border);
-  padding: 10px;
+  padding: 10px 10px 6px;
 }
 
 .dep-error {
@@ -1297,6 +1363,10 @@ textarea {
 
   #tabs {
     gap: 6px;
+  }
+
+  .config-row {
+    flex-direction: column;
   }
 
   .deps-row {
