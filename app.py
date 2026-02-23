@@ -40,6 +40,8 @@ DEFAULT_FILES = [
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
 ]
 DEFAULT_DEPENDENCIES: list[str] = []
+SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+DEFAULT_PYTHON_VERSION = "3.14"
 
 
 @dataclass(frozen=True)
@@ -241,6 +243,18 @@ def _normalize_ruff_repo_path(raw: Any) -> Path | None:
     return resolved
 
 
+def _normalize_python_version(raw: Any) -> str:
+    if raw is None:
+        return DEFAULT_PYTHON_VERSION
+    if not isinstance(raw, str):
+        raise ValueError("python_version must be a string")
+    value = raw.strip()
+    if value not in SUPPORTED_PYTHON_VERSIONS:
+        allowed = ", ".join(SUPPORTED_PYTHON_VERSIONS)
+        raise ValueError(f"Unsupported python_version {value!r}; expected one of: {allowed}")
+    return value
+
+
 def _normalize_python_tool_repo_paths(raw: Any) -> dict[str, Path]:
     if raw is None:
         return {}
@@ -414,6 +428,7 @@ def _command_for_tool(
     venv_python: Path | None,
     python_tool_repo_paths: dict[str, Path] | None = None,
     file_paths: list[str] | None = None,
+    python_version: str = DEFAULT_PYTHON_VERSION,
 ) -> list[str]:
     repo_path = (python_tool_repo_paths or {}).get(spec.name)
     command = (
@@ -421,6 +436,17 @@ def _command_for_tool(
         if repo_path is not None
         else list(spec.command)
     )
+
+    if spec.name == "mypy":
+        command.extend(["--python-version", python_version])
+    elif spec.name == "pyright":
+        command.extend(["--pythonversion", python_version])
+    elif spec.name == "pyrefly":
+        command.extend(["--python-version", python_version])
+    elif spec.name == "ty":
+        command.extend(["--python-version", python_version])
+    elif spec.name == "zuban":
+        command.extend(["--python-version", python_version])
 
     # Tools are installed into the venv. Run them with the venv's Python via
     # "python -m <tool>" so they can resolve imports from installed packages.
@@ -643,9 +669,14 @@ def _venv_env_overrides(venv_python: Path | None) -> dict[str, str] | None:
     }
 
 
-def _ruff_ty_command(ruff_repo_path: Path, venv_python: Path | None) -> list[str]:
+def _ruff_ty_command(
+    ruff_repo_path: Path,
+    venv_python: Path | None,
+    python_version: str = DEFAULT_PYTHON_VERSION,
+) -> list[str]:
     manifest = ruff_repo_path / "Cargo.toml"
     command = ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--bin", "ty", "--", "check"]
+    command.extend(["--python-version", python_version])
     if venv_python is not None:
         command.extend(["--python", str(venv_python)])
     return command
@@ -655,11 +686,12 @@ def _run_ruff_ty_from_repo(
     ruff_repo_path: Path,
     project_dir: Path,
     venv_python: Path | None,
+    python_version: str,
     timeout_seconds: int | None,
 ) -> dict[str, Any]:
     return _run_command(
         RUFF_TY_TOOL_NAME,
-        _ruff_ty_command(ruff_repo_path, venv_python),
+        _ruff_ty_command(ruff_repo_path, venv_python, python_version),
         project_dir,
         timeout_seconds,
         _venv_env_overrides(venv_python),
@@ -673,6 +705,7 @@ def _run_all_tools(
     enabled_tools: list[str] | None = None,
     timeout_seconds: int = 120,
     file_paths: list[str] | None = None,
+    python_version: str = DEFAULT_PYTHON_VERSION,
 ) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     env_overrides = _venv_env_overrides(venv_python)
@@ -682,7 +715,7 @@ def _run_all_tools(
         return results
 
     command_by_tool = {
-        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths)
+        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version)
         for spec in selected_specs
     }
     with ThreadPoolExecutor(max_workers=max(1, len(selected_specs))) as executor:
@@ -721,13 +754,14 @@ def _iter_all_tools(
     timeout_seconds: int = 120,
     file_paths: list[str] | None = None,
     ruff_repo_path: Path | None = None,
+    python_version: str = DEFAULT_PYTHON_VERSION,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield (tool_name, result) pairs as each tool finishes."""
     env_overrides = _venv_env_overrides(venv_python)
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
 
     command_by_tool: dict[str, list[str]] = {
-        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths)
+        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version)
         for spec in selected_specs
     }
 
@@ -758,6 +792,7 @@ def _iter_all_tools(
                 ruff_repo_path,
                 project_dir,
                 venv_python,
+                python_version,
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
             )] = RUFF_TY_TOOL_NAME
 
@@ -915,6 +950,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 {
                     "initial_files": DEFAULT_FILES,
                     "initial_dependencies": DEFAULT_DEPENDENCIES,
+                    "initial_python_version": DEFAULT_PYTHON_VERSION,
+                    "python_versions": list(SUPPORTED_PYTHON_VERSIONS),
                     "tool_order": list(TOOL_ORDER),
                     "enabled_tools": list(TOOL_ORDER),
                     "initial_ruff_repo_path": "",
@@ -962,6 +999,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
             dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
+            python_version = _normalize_python_version(body.get("python_version"))
             refresh_venv = bool(body.get("refresh_venv"))
             ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
             python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
@@ -992,6 +1030,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "error_type": "dependency_install_failed",
                             "dependency_install": dependency_install,
                             "dependencies": dependencies,
+                            "python_version": python_version,
                             "enabled_tools": enabled_tools,
                             "tool_order": tool_order,
                             "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
@@ -1012,6 +1051,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     "type": "metadata",
                     "tool_versions": dict(TOOL_VERSIONS),
                     "dependencies": dependencies,
+                    "python_version": python_version,
+                    "python_versions": list(SUPPORTED_PYTHON_VERSIONS),
                     "enabled_tools": enabled_tools,
                     "tool_order": tool_order,
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
@@ -1029,6 +1070,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
                         file_paths=file_paths,
                         ruff_repo_path=ruff_repo_path if RUFF_TY_TOOL_NAME in enabled_tools else None,
+                        python_version=python_version,
                     ):
                         _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
                     _ndjson_send(self, {"type": "done"})

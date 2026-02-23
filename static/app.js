@@ -1,4 +1,6 @@
 const STORAGE_KEY = "multiplay_state";
+const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"];
+const DEFAULT_PYTHON_VERSION = "3.14";
 
 function saveState() {
   try {
@@ -7,6 +9,7 @@ function saveState() {
       JSON.stringify({
         files: state.files.map((f) => ({ name: f.name, content: f.content })),
         dependencies: state.dependencies.slice(),
+        pythonVersion: state.pythonVersion,
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
         toolOrder: toolOrder.slice(),
@@ -49,6 +52,7 @@ function loadSavedState() {
       dependencies: Array.isArray(data.dependencies)
         ? data.dependencies.filter((d) => typeof d === "string")
         : [],
+      pythonVersion: typeof data.pythonVersion === "string" ? data.pythonVersion : DEFAULT_PYTHON_VERSION,
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
       toolOrder: savedToolOrder,
@@ -98,6 +102,8 @@ let draggedFileIndex = null;
 const state = {
   files: [],
   dependencies: [],
+  pythonVersion: DEFAULT_PYTHON_VERSION,
+  pythonVersionOptions: DEFAULT_PYTHON_VERSION_OPTIONS.slice(),
   ruffRepoPath: "",
   pythonToolRepoPaths: {},
   activeIndex: 0,
@@ -164,6 +170,7 @@ const state = {
 
 const tabsEl = document.getElementById("tabs");
 const depsInputEl = document.getElementById("dependencies");
+const pythonVersionEl = document.getElementById("python-version");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
@@ -1317,6 +1324,53 @@ function normalizeToolList(raw) {
   return normalized;
 }
 
+function normalizePythonVersionOptions(raw) {
+  if (!Array.isArray(raw)) {
+    return DEFAULT_PYTHON_VERSION_OPTIONS.slice();
+  }
+
+  const seen = new Set();
+  const normalized = [];
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const value = item.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    normalized.push(value);
+  }
+
+  return normalized.length > 0 ? normalized : DEFAULT_PYTHON_VERSION_OPTIONS.slice();
+}
+
+function normalizePythonVersion(raw, options = state.pythonVersionOptions) {
+  const allowed = Array.isArray(options) && options.length > 0 ? options : DEFAULT_PYTHON_VERSION_OPTIONS;
+  const fallback = allowed.includes(DEFAULT_PYTHON_VERSION) ? DEFAULT_PYTHON_VERSION : allowed[allowed.length - 1];
+  if (typeof raw !== "string") {
+    return fallback;
+  }
+  const value = raw.trim();
+  return allowed.includes(value) ? value : fallback;
+}
+
+function setPythonVersionOptions(rawOptions) {
+  state.pythonVersionOptions = normalizePythonVersionOptions(rawOptions);
+  pythonVersionEl.innerHTML = "";
+
+  state.pythonVersionOptions.forEach((version) => {
+    const option = document.createElement("option");
+    option.value = version;
+    option.textContent = version;
+    pythonVersionEl.appendChild(option);
+  });
+
+  state.pythonVersion = normalizePythonVersion(state.pythonVersion, state.pythonVersionOptions);
+  pythonVersionEl.value = state.pythonVersion;
+}
+
 function normalizeRuffRepoPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
@@ -1407,6 +1461,18 @@ function updateDependenciesFromInput({ triggerAnalyze = false } = {}) {
   const parsed = parseDependencies(depsInputEl.value);
   state.dependencies = parsed;
   state.refreshVenv = true;
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updatePythonVersionFromInput({ triggerAnalyze = false } = {}) {
+  const normalized = normalizePythonVersion(pythonVersionEl.value, state.pythonVersionOptions);
+  pythonVersionEl.value = normalized;
+  if (normalized === state.pythonVersion) {
+    return;
+  }
+  state.pythonVersion = normalized;
   if (triggerAnalyze) {
     scheduleAnalyze();
   }
@@ -1817,6 +1883,13 @@ function renderResults(resultByTool) {
 }
 
 function handleMetadataMessage(msg) {
+  if (Array.isArray(msg.python_versions)) {
+    setPythonVersionOptions(msg.python_versions);
+  }
+  if (typeof msg.python_version === "string") {
+    state.pythonVersion = normalizePythonVersion(msg.python_version, state.pythonVersionOptions);
+    pythonVersionEl.value = state.pythonVersion;
+  }
   if (msg.tool_versions && typeof msg.tool_versions === "object") {
     state.toolVersions = { ...state.toolVersions, ...msg.tool_versions };
   }
@@ -2031,6 +2104,7 @@ async function analyze({ onlyTools } = {}) {
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     dependencies: state.dependencies.slice(),
+    python_version: state.pythonVersion,
     refresh_venv: refreshVenv,
     ruff_repo_path: state.ruffRepoPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
@@ -2339,6 +2413,14 @@ function bindEvents() {
     updateDependenciesFromInput({ triggerAnalyze: true });
   });
 
+  pythonVersionEl.addEventListener("change", () => {
+    updatePythonVersionFromInput({ triggerAnalyze: true });
+  });
+
+  pythonVersionEl.addEventListener("blur", () => {
+    updatePythonVersionFromInput({ triggerAnalyze: true });
+  });
+
   ruffRepoPathEl.addEventListener("input", () => {
     updateRuffRepoPathFromInput({ triggerAnalyze: true, writeBack: false });
   });
@@ -2378,6 +2460,7 @@ function bindEvents() {
 
 function loadFromBootstrap(body) {
   clearDependencyInstallError();
+  setPythonVersionOptions(body.python_versions);
   const files = Array.isArray(body.initial_files) ? body.initial_files : [];
   const normalizedFiles = files
     .filter((f) => f && typeof f.name === "string" && typeof f.content === "string")
@@ -2433,6 +2516,8 @@ function loadFromBootstrap(body) {
     state.dependencies = [];
   }
   depsInputEl.value = dependenciesToText(state.dependencies);
+  state.pythonVersion = normalizePythonVersion(body.initial_python_version, state.pythonVersionOptions);
+  pythonVersionEl.value = state.pythonVersion;
 
   if (typeof body.temp_dir === "string" && body.temp_dir) {
     tempDirEl.textContent = "Temp directory: " + body.temp_dir;
@@ -2455,6 +2540,8 @@ async function bootstrap() {
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
     state.dependencies = [];
+    state.pythonVersion = DEFAULT_PYTHON_VERSION;
+    setPythonVersionOptions(DEFAULT_PYTHON_VERSION_OPTIONS);
     state.ruffRepoPath = "";
     state.pythonToolRepoPaths = {};
     toolOrder = DEFAULT_TOOL_ORDER.slice();
@@ -2462,6 +2549,7 @@ async function bootstrap() {
     ensureToolSettings();
     state.lastResults = {};
     depsInputEl.value = "";
+    pythonVersionEl.value = state.pythonVersion;
     ruffRepoPathEl.value = "";
     mypyRepoPathEl.value = "";
     pycroscopeRepoPathEl.value = "";
@@ -2475,6 +2563,8 @@ async function bootstrap() {
     state.activeIndex = Math.min(saved.activeIndex, saved.files.length - 1);
     state.dependencies = saved.dependencies;
     depsInputEl.value = dependenciesToText(state.dependencies);
+    state.pythonVersion = normalizePythonVersion(saved.pythonVersion, state.pythonVersionOptions);
+    pythonVersionEl.value = state.pythonVersion;
     state.ruffRepoPath = saved.ruffRepoPath;
     ruffRepoPathEl.value = state.ruffRepoPath;
     if (saved.toolOrder) {
