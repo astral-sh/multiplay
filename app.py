@@ -75,7 +75,7 @@ SERVER_ID = uuid.uuid4().hex
 STATE_LOCK = threading.Lock()
 PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
-ANALYZE_TOOL_TIMEOUT_SECONDS = 2
+ANALYZE_TOOL_TIMEOUT_SECONDS = 10
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
 
 
