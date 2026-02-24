@@ -22,9 +22,16 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
 uv run multiplay
 ```
 
-Then open:
+Then open [http://localhost:8000](http://localhost:8000).
 
-- [http://localhost:8000](http://localhost:8000)
+### Docker
+
+```bash
+docker build -t multiplay .
+docker run --rm -p 8000:8000 multiplay
+```
+
+Then open [http://localhost:8000](http://localhost:8000).
 
 ## Notes
 
