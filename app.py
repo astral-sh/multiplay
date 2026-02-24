@@ -408,7 +408,17 @@ def _run_uv_pip_install(project_dir: Path, dependencies: list[str], timeout_seco
             }
 
     # Install dependencies into the venv.
-    install_command = ["uv", "pip", "install", "--python", str(venv_dir / "bin" / "python"), *dependencies]
+    venv_python = _venv_python_path(project_dir)
+    if venv_python is None:
+        return {
+            "ran": True,
+            "command": "uv pip install",
+            "returncode": -1,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "output": f"Could not find Python in venv at {venv_dir}",
+            "dependencies": dependencies,
+        }
+    install_command = ["uv", "pip", "install", "--python", str(venv_python), *dependencies]
     try:
         completed = subprocess.run(
             install_command,
