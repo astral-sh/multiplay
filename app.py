@@ -56,8 +56,8 @@ TOOL_SPECS = [
     ToolSpec("ty", ["ty", "check"], ["ty", "--version"]),
     ToolSpec("pyright", ["pyright", "--outputjson"], ["pyright", "--version"]),
     ToolSpec("pyrefly", ["pyrefly", "check"], ["pyrefly", "--version"]),
-    ToolSpec("mypy", ["mypy", "--color-output", "--pretty"], ["mypy", "--version"]),
-    ToolSpec("zuban", ["zuban", "check", "--pretty"], ["zuban", "--version"]),
+    ToolSpec("mypy", ["mypy"], ["mypy", "--version"]),
+    ToolSpec("zuban", ["zuban", "check"], ["zuban", "--version"]),
     ToolSpec(
         "pycroscope",
         ["pycroscope", "--output-format", "concise"],

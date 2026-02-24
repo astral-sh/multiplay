@@ -2310,13 +2310,14 @@ async function analyze({ onlyTools } = {}) {
 
 const TOOL_DEFAULT_CONFIG = {
   ty: '[tool.ty.rules]\nundefined-reveal = "ignore"',
-  mypy: "check_untyped_defs = true",
+  mypy: "color_output = true\npretty = true\ncheck_untyped_defs = true",
+  zuban: "pretty = true\ncheck_untyped_defs = true",
 };
 
 function buildPyprojectContent() {
   const seen = new Set();
   const sections = [];
-  for (const name of enabledTools()) {
+  for (const name of toolOrder) {
     const header = toolConfigSection(name);
     if (!seen.has(header)) {
       seen.add(header);
