@@ -38,6 +38,7 @@ DEFAULT_FILES = [
         ),
     },
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
+    {"name": "pyproject.toml", "content": ""},
 ]
 DEFAULT_DEPENDENCIES: list[str] = []
 SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
