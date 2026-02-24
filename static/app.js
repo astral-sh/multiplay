@@ -74,6 +74,7 @@ const DEFAULT_FILES = [
       "    run()\n",
   },
   { name: "helpers.py", content: "def greet(name: str) -> str:\n    return f'hello, {name}'\n" },
+  { name: "pyproject.toml", content: "" },
 ];
 
 const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycroscope"];
@@ -310,13 +311,12 @@ if (gistInputEl) {
 }
 
 function handleReset() {
-  for (const file of state.files) {
-    if (file.name === "pyproject.toml") {
-      file.content = buildPyprojectContent();
-    } else {
-      file.content = "";
-    }
-  }
+  state.files = [
+    { name: "main.py", content: "" },
+    { name: "pyproject.toml", content: buildPyprojectContent() },
+  ];
+  state.activeIndex = 0;
+  renderTabs();
   syncEditorFromState();
   scheduleAnalyze();
 }
@@ -2308,6 +2308,12 @@ async function analyze({ onlyTools } = {}) {
   }
 }
 
+const TOOL_DEFAULT_CONFIG = {
+  ty: '[tool.ty.rules]\nundefined-reveal = "ignore"',
+  mypy: "color_output = true\npretty = true\ncheck_untyped_defs = true",
+  zuban: "pretty = true\ncheck_untyped_defs = true",
+};
+
 function buildPyprojectContent() {
   const seen = new Set();
   const sections = [];
@@ -2315,10 +2321,19 @@ function buildPyprojectContent() {
     const header = toolConfigSection(name);
     if (!seen.has(header)) {
       seen.add(header);
-      sections.push(header);
+      const defaults = TOOL_DEFAULT_CONFIG[name] || "";
+      sections.push(defaults ? `${header}\n${defaults}` : header);
     }
   }
   return sections.join("\n\n\n") + "\n";
+}
+
+/** Fill in empty pyproject.toml content in state.files using current toolOrder. */
+function populateDefaultPyprojectToml() {
+  const pyproj = state.files.find((f) => f.name === "pyproject.toml");
+  if (pyproj && !pyproj.content) {
+    pyproj.content = buildPyprojectContent();
+  }
 }
 
 function openConfigFile(tool) {
@@ -2627,6 +2642,7 @@ function loadFromBootstrap(body) {
   }
 
   state.lastResults = {};
+  populateDefaultPyprojectToml();
 }
 
 async function bootstrap() {
@@ -2657,6 +2673,7 @@ async function bootstrap() {
     ruffRepoPathEl.value = "";
     mypyRepoPathEl.value = "";
     pycroscopeRepoPathEl.value = "";
+    populateDefaultPyprojectToml();
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
 

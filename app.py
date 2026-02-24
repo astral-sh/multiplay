@@ -38,6 +38,7 @@ DEFAULT_FILES = [
         ),
     },
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
+    {"name": "pyproject.toml", "content": ""},
 ]
 DEFAULT_DEPENDENCIES: list[str] = []
 SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -55,8 +56,8 @@ TOOL_SPECS = [
     ToolSpec("ty", ["ty", "check"], ["ty", "--version"]),
     ToolSpec("pyright", ["pyright", "--outputjson"], ["pyright", "--version"]),
     ToolSpec("pyrefly", ["pyrefly", "check"], ["pyrefly", "--version"]),
-    ToolSpec("mypy", ["mypy", "--color-output", "--pretty"], ["mypy", "--version"]),
-    ToolSpec("zuban", ["zuban", "check", "--pretty"], ["zuban", "--version"]),
+    ToolSpec("mypy", ["mypy"], ["mypy", "--version"]),
+    ToolSpec("zuban", ["zuban", "check"], ["zuban", "--version"]),
     ToolSpec(
         "pycroscope",
         ["pycroscope", "--output-format", "concise"],
