@@ -2,6 +2,24 @@ const STORAGE_KEY = "multiplay_state";
 const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"];
 const DEFAULT_PYTHON_VERSION = "3.14";
 
+// Per-tab session ID: sessionStorage is scoped to a single tab.
+function getSessionId() {
+  let id = sessionStorage.getItem("multiplay_session");
+  if (!id) {
+    id =
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID().replace(/-/g, "")
+        : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    sessionStorage.setItem("multiplay_session", id);
+  }
+  return id;
+}
+const SESSION_ID = getSessionId();
+
+function sessionHeaders(extra) {
+  return Object.assign({ "X-Session-Id": SESSION_ID }, extra || {});
+}
+
 function saveState() {
   try {
     localStorage.setItem(
@@ -148,7 +166,7 @@ const state = {
 
   async function poll() {
     try {
-      const resp = await fetch("/api/health");
+      const resp = await fetch("/api/health", { headers: sessionHeaders() });
       if (!resp.ok) {
         setServerDown(true);
       } else {
@@ -203,7 +221,7 @@ function startRuffDirWatcher() {
     }
 
     try {
-      const resp = await fetch("/api/dir-fingerprint?path=" + encodeURIComponent(ruffPath));
+      const resp = await fetch("/api/dir-fingerprint?path=" + encodeURIComponent(ruffPath), { headers: sessionHeaders() });
       if (!resp.ok) {
         scheduleNext();
         return;
@@ -333,7 +351,7 @@ async function handleShare() {
   try {
     const resp = await fetch("/api/share", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         files: state.files.map((f) => ({ name: f.name, content: f.content })),
         dependencies: state.dependencies.slice(),
@@ -384,7 +402,7 @@ async function handleLoadGist() {
   }
 
   try {
-    const resp = await fetch("/api/gist/" + encodeURIComponent(gistId));
+    const resp = await fetch("/api/gist/" + encodeURIComponent(gistId), { headers: sessionHeaders() });
     const body = await resp.json();
     if (!resp.ok) {
       setStatus("Load gist failed: " + (body.error || resp.status));
@@ -2081,8 +2099,8 @@ function handleMetadataMessage(msg) {
       }
     });
   }
-  if (typeof msg.temp_dir === "string" && msg.temp_dir) {
-    setTempDir("Temp directory: " + msg.temp_dir);
+  if (typeof msg.session_id === "string" && msg.session_id) {
+    setTempDir("Session: " + msg.session_id);
   }
 
   if (state.currentOnlyTools) {
@@ -2272,7 +2290,7 @@ async function analyze({ onlyTools } = {}) {
   try {
     const resp = await fetch("/api/analyze", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -2711,8 +2729,8 @@ function loadFromBootstrap(body) {
   state.pythonVersion = normalizePythonVersion(body.initial_python_version, state.pythonVersionOptions);
   pythonVersionEl.value = state.pythonVersion;
 
-  if (typeof body.temp_dir === "string" && body.temp_dir) {
-    setTempDir("Temp directory: " + body.temp_dir);
+  if (typeof body.session_id === "string" && body.session_id) {
+    setTempDir("Session: " + body.session_id);
   }
 
   state.lastResults = {};
@@ -2776,7 +2794,7 @@ async function bootstrap() {
   renderResults({});
 
   try {
-    const resp = await fetch("/api/bootstrap");
+    const resp = await fetch("/api/bootstrap", { headers: sessionHeaders() });
     const body = await resp.json();
     if (!resp.ok) {
       throw new Error(body.error || "bootstrap failed");
