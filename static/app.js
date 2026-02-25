@@ -2044,8 +2044,10 @@ function handleMetadataMessage(msg) {
       }
     });
   }
-  if (typeof msg.session_id === "string" && msg.session_id) {
+  if (msg.hosted_mode && typeof msg.session_id === "string" && msg.session_id) {
     setTempDir("Session: " + msg.session_id);
+  } else if (typeof msg.temp_dir === "string" && msg.temp_dir) {
+    setTempDir("Temp directory: " + msg.temp_dir);
   }
 
   if (state.currentOnlyTools) {
@@ -2655,8 +2657,16 @@ function loadFromBootstrap(body) {
   state.pythonVersion = normalizePythonVersion(body.initial_python_version, state.pythonVersionOptions);
   pythonVersionEl.value = state.pythonVersion;
 
-  if (typeof body.session_id === "string" && body.session_id) {
+  // Hide local checker directory inputs in multi-session mode.
+  const localCheckersSection = document.getElementById("local-checkers-section");
+  if (localCheckersSection) {
+    localCheckersSection.style.display = body.local_checkers_enabled ? "" : "none";
+  }
+
+  if (body.hosted_mode && typeof body.session_id === "string" && body.session_id) {
     setTempDir("Session: " + body.session_id);
+  } else if (typeof body.temp_dir === "string" && body.temp_dir) {
+    setTempDir("Temp directory: " + body.temp_dir);
   }
 
   state.lastResults = {};

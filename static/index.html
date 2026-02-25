@@ -38,6 +38,7 @@
             spellcheck="false"
           ></textarea>
           <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
+          <div id="local-checkers-section">
           <label class="advanced-section-label">Local checker directories</label>
           <div class="deps-row">
             <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
@@ -72,6 +73,7 @@
             />
           </div>
           <p class="status deps-note">Runs <code>uv run --with-editable 'pycroscope @ &lt;dir&gt;' pycroscope ...</code> for the pycroscope checker.</p>
+          </div>
         </div>
       </details>
         <label class="python-version-group" for="python-version">
