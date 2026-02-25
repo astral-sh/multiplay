@@ -12,6 +12,7 @@ function saveState() {
         pythonVersion: state.pythonVersion,
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
+        tyBinaryPath: state.tyBinaryPath,
         toolOrder: toolOrder.slice(),
         toolSettings: state.toolSettings,
       }),
@@ -55,6 +56,7 @@ function loadSavedState() {
       pythonVersion: typeof data.pythonVersion === "string" ? data.pythonVersion : DEFAULT_PYTHON_VERSION,
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
+      tyBinaryPath: typeof data.tyBinaryPath === "string" ? data.tyBinaryPath : "",
       toolOrder: savedToolOrder,
       toolSettings: savedToolSettings,
     };
@@ -106,6 +108,8 @@ const state = {
   pythonVersion: DEFAULT_PYTHON_VERSION,
   pythonVersionOptions: DEFAULT_PYTHON_VERSION_OPTIONS.slice(),
   ruffRepoPath: "",
+  tyBinaryPath: "",
+  resolvedTyBinaryPath: null,
   pythonToolRepoPaths: {},
   activeIndex: 0,
   renamingIndex: -1,
@@ -234,6 +238,8 @@ const depsInputEl = document.getElementById("dependencies");
 const dependenciesConfigEl = document.getElementById("dependencies-config");
 const pythonVersionEl = document.getElementById("python-version");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
+const tyBinaryPathEl = document.getElementById("ty-binary-path");
+const tyBinaryPathNoteEl = document.getElementById("ty-binary-path-note");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
 const lineNumbersEl = document.getElementById("line-numbers");
@@ -635,6 +641,23 @@ function showDependencyInstallError(info) {
     `<p class="dep-error-meta">Requested: <code>${escapeHtml(depsText)}</code></p>` +
     `<pre>${ansiToHtml(output || "(no output)")}</pre>`;
   depErrorEl.classList.remove("hidden");
+}
+
+const TY_BINARY_PATH_DEFAULT_NOTE = tyBinaryPathNoteEl ? tyBinaryPathNoteEl.innerHTML : "";
+
+function syncTyBinaryPathNote() {
+  if (!tyBinaryPathNoteEl) return;
+  const raw = state.tyBinaryPath;
+  const resolved = state.resolvedTyBinaryPath;
+  // Show error only when: user typed something, AND the server responded
+  // with empty string (meaning validation failed). null = still waiting.
+  if (raw && resolved !== null && !resolved) {
+    tyBinaryPathNoteEl.textContent = "Path not found or is not a file: " + raw;
+    tyBinaryPathNoteEl.classList.add("deps-note-error");
+  } else {
+    tyBinaryPathNoteEl.innerHTML = TY_BINARY_PATH_DEFAULT_NOTE;
+    tyBinaryPathNoteEl.classList.remove("deps-note-error");
+  }
 }
 
 function applyAnsiCodes(style, params) {
@@ -1475,6 +1498,10 @@ function normalizeRuffRepoPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
 
+function normalizeTyBinaryPath(raw) {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
 function normalizePythonToolRepoPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
@@ -1514,6 +1541,9 @@ function toolLabel(tool) {
   if (tool === RUFF_TY_TOOL) {
     const checkoutPath = normalizeRuffRepoPath(state.ruffRepoPath);
     return checkoutPath ? `ty (${checkoutPath})` : "ty (local checkout)";
+  }
+  if (tool === "ty" && state.tyBinaryPath) {
+    return `ty (${state.tyBinaryPath})`;
   }
   const localPythonToolPath = pythonToolRepoPathForTool(tool);
   if (localPythonToolPath) {
@@ -1592,6 +1622,26 @@ function updateRuffRepoPathFromInput({ triggerAnalyze, writeBack = true } = { tr
   ensureToolSettings();
   renderResults(state.lastResults);
   startRuffDirWatcher();
+
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updateTyBinaryPathFromInput({ triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
+  const normalized = normalizeTyBinaryPath(tyBinaryPathEl.value);
+  if (writeBack) {
+    tyBinaryPathEl.value = normalized;
+  }
+  if (normalized === state.tyBinaryPath) {
+    return;
+  }
+
+  state.tyBinaryPath = normalized;
+  state.resolvedTyBinaryPath = null;
+  syncTyBinaryPathNote();
+  saveState();
+  renderResults(state.lastResults);
 
   if (triggerAnalyze) {
     scheduleAnalyze();
@@ -1829,7 +1879,8 @@ function renderResults(resultByTool) {
     const title = document.createElement("strong");
     const displayName = toolLabel(tool);
     const localPythonToolPath = pythonToolRepoPathForTool(tool);
-    const version = localPythonToolPath ? "" : state.toolVersions[tool];
+    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tyBinaryPath);
+    const version = suppressVersion ? "" : state.toolVersions[tool];
     title.textContent =
       typeof version === "string" && version && version !== "unknown"
         ? `${displayName} v${version}`
@@ -2009,6 +2060,10 @@ function handleMetadataMessage(msg) {
   }
   if (typeof msg.ruff_repo_path === "string") {
     state.ruffRepoPath = normalizeRuffRepoPath(msg.ruff_repo_path);
+  }
+  if (typeof msg.ty_binary_path === "string") {
+    state.resolvedTyBinaryPath = msg.ty_binary_path;
+    syncTyBinaryPathNote();
   }
   if (msg.python_tool_repo_paths && typeof msg.python_tool_repo_paths === "object") {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(msg.python_tool_repo_paths);
@@ -2209,6 +2264,7 @@ async function analyze({ onlyTools } = {}) {
     python_version: state.pythonVersion,
     refresh_venv: refreshVenv,
     ruff_repo_path: state.ruffRepoPath,
+    ty_binary_path: state.tyBinaryPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
     enabled_tools: toolsToSend,
   };
@@ -2550,6 +2606,18 @@ function bindEvents() {
     updateRuffRepoPathFromInput({ triggerAnalyze: true });
   });
 
+  tyBinaryPathEl.addEventListener("input", () => {
+    updateTyBinaryPathFromInput({ triggerAnalyze: true, writeBack: false });
+  });
+
+  tyBinaryPathEl.addEventListener("change", () => {
+    updateTyBinaryPathFromInput({ triggerAnalyze: true });
+  });
+
+  tyBinaryPathEl.addEventListener("blur", () => {
+    updateTyBinaryPathFromInput({ triggerAnalyze: true });
+  });
+
   mypyRepoPathEl.addEventListener("input", () => {
     updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true, writeBack: false });
   });
@@ -2598,12 +2666,18 @@ function loadFromBootstrap(body) {
   } else {
     state.ruffRepoPath = "";
   }
+  if (typeof body.initial_ty_binary_path === "string") {
+    state.tyBinaryPath = normalizeTyBinaryPath(body.initial_ty_binary_path);
+  } else {
+    state.tyBinaryPath = "";
+  }
   if (body.initial_python_tool_repo_paths && typeof body.initial_python_tool_repo_paths === "object") {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(body.initial_python_tool_repo_paths);
   } else {
     state.pythonToolRepoPaths = {};
   }
   ruffRepoPathEl.value = state.ruffRepoPath;
+  tyBinaryPathEl.value = state.tyBinaryPath;
   mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
   pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
   ensureToolSettings();
@@ -2645,6 +2719,58 @@ function loadFromBootstrap(body) {
   populateDefaultPyprojectToml();
 }
 
+function showRestoredOptionsToast() {
+  const restored = [];
+  if (state.dependencies.length > 0) {
+    restored.push("Dependencies: " + state.dependencies.join(", "));
+  }
+  if (state.tyBinaryPath) {
+    restored.push("Custom ty binary: " + state.tyBinaryPath);
+  }
+  if (state.ruffRepoPath) {
+    restored.push("Local Ruff clone: " + state.ruffRepoPath);
+  }
+  PYTHON_LOCAL_TOOLS.forEach((tool) => {
+    const path = pythonToolRepoPathForTool(tool);
+    if (path) {
+      const label = tool.charAt(0).toUpperCase() + tool.slice(1);
+      restored.push("Local " + label + " checkout: " + path);
+    }
+  });
+  if (restored.length === 0) return;
+
+  const toast = document.createElement("div");
+  toast.className = "restored-toast";
+  toast.setAttribute("role", "status");
+
+  const heading = document.createElement("div");
+  heading.className = "restored-toast-heading";
+  heading.textContent = "Settings restored from previous session";
+  toast.appendChild(heading);
+
+  const list = document.createElement("ul");
+  list.className = "restored-toast-list";
+  restored.forEach((item) => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    list.appendChild(li);
+  });
+  toast.appendChild(list);
+
+  document.body.appendChild(toast);
+
+  // Trigger reflow then add visible class for transition
+  toast.offsetHeight; // eslint-disable-line no-unused-expressions
+  toast.classList.add("visible");
+
+  setTimeout(() => {
+    toast.classList.remove("visible");
+    toast.addEventListener("transitionend", () => toast.remove(), { once: true });
+    // Fallback removal in case transitionend doesn't fire
+    setTimeout(() => toast.remove(), 500);
+  }, 3000);
+}
+
 async function bootstrap() {
   setStatus("Loading...");
   renderResults({});
@@ -2662,6 +2788,7 @@ async function bootstrap() {
     state.pythonVersion = DEFAULT_PYTHON_VERSION;
     setPythonVersionOptions(DEFAULT_PYTHON_VERSION_OPTIONS);
     state.ruffRepoPath = "";
+    state.tyBinaryPath = "";
     state.pythonToolRepoPaths = {};
     toolOrder = DEFAULT_TOOL_ORDER.slice();
     state.toolSettings = {};
@@ -2671,6 +2798,7 @@ async function bootstrap() {
     syncDependenciesSectionOpen();
     pythonVersionEl.value = state.pythonVersion;
     ruffRepoPathEl.value = "";
+    tyBinaryPathEl.value = "";
     mypyRepoPathEl.value = "";
     pycroscopeRepoPathEl.value = "";
     populateDefaultPyprojectToml();
@@ -2689,6 +2817,8 @@ async function bootstrap() {
     pythonVersionEl.value = state.pythonVersion;
     state.ruffRepoPath = saved.ruffRepoPath;
     ruffRepoPathEl.value = state.ruffRepoPath;
+    state.tyBinaryPath = saved.tyBinaryPath;
+    tyBinaryPathEl.value = state.tyBinaryPath;
     if (saved.toolOrder) {
       // Merge saved order with current toolOrder: keep saved order for tools
       // that still exist, append any new tools from the server.
@@ -2713,6 +2843,7 @@ async function bootstrap() {
     ensureToolSettings();
   }
 
+  showRestoredOptionsToast();
   bindEvents();
   renderTabs();
   syncEditorFromState();

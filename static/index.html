@@ -38,7 +38,18 @@
             spellcheck="false"
           ></textarea>
           <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
-          <label class="advanced-section-label">Local checker directories</label>
+          <label class="advanced-section-label">Custom checker options</label>
+          <div class="deps-row">
+            <label class="deps-label" for="ty-binary-path">Custom ty binary</label>
+            <input
+              id="ty-binary-path"
+              class="deps-input"
+              type="text"
+              placeholder="/path/to/ty"
+              spellcheck="false"
+            />
+          </div>
+          <p class="status deps-note" id="ty-binary-path-note">Use a pre-built <code>ty</code> binary instead of the PyPI version.</p>
           <div class="deps-row">
             <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
             <input
@@ -49,7 +60,7 @@
               spellcheck="false"
             />
           </div>
-          <p class="status deps-note">Runs <code>cargo run --bin ty -- check ...</code> as an extra checker.</p>
+          <p class="status deps-note">Runs <code>cargo run --bin ty -- check ...</code> as an extra checker, for comparison with ty from PyPI.</p>
           <div class="deps-row">
             <label class="deps-label" for="mypy-repo-path">Local mypy checkout</label>
             <input
