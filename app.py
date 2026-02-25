@@ -90,9 +90,10 @@ class Session:
 
 
 class SessionManager:
-    def __init__(self) -> None:
+    def __init__(self, fixed_project_dir: Path | None = None) -> None:
         self._sessions: dict[str, Session] = {}
         self._manager_lock = threading.Lock()
+        self._fixed_project_dir = fixed_project_dir
 
     def get_or_create(self, session_id: str | None) -> tuple[Session, bool]:
         """Return (session, created). If session_id is None or unknown, create a new one."""
@@ -103,7 +104,11 @@ class SessionManager:
                 return session, False
 
             sid = session_id if session_id else uuid.uuid4().hex
-            project_dir = Path(tempfile.mkdtemp(prefix=f"multiplay-{sid[:8]}-"))
+            if self._fixed_project_dir is not None:
+                project_dir = self._fixed_project_dir
+                project_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                project_dir = Path(tempfile.mkdtemp(prefix=f"multiplay-{sid[:8]}-"))
             session = Session(
                 id=sid,
                 project_dir=project_dir,
@@ -126,15 +131,17 @@ class SessionManager:
 
         for session in to_remove:
             print(f"[session] Reaping {session.id[:8]}… (idle {int(now - session.last_active)}s)")
-            shutil.rmtree(session.project_dir, ignore_errors=True)
+            if self._fixed_project_dir is None:
+                shutil.rmtree(session.project_dir, ignore_errors=True)
 
         return len(to_remove)
 
     def destroy_all(self) -> None:
         """Clean up all sessions (for shutdown)."""
         with self._manager_lock:
-            for session in self._sessions.values():
-                shutil.rmtree(session.project_dir, ignore_errors=True)
+            if self._fixed_project_dir is None:
+                for session in self._sessions.values():
+                    shutil.rmtree(session.project_dir, ignore_errors=True)
             self._sessions.clear()
 
     @property
@@ -143,9 +150,9 @@ class SessionManager:
             return len(self._sessions)
 
 
-SESSION_MANAGER = SessionManager()
-# When MULTIPLAY_PROJECT_DIR is set, use a single shared session (original behavior).
-_FIXED_PROJECT_DIR = os.environ.get("MULTIPLAY_PROJECT_DIR")
+HOSTED_MODE = os.environ.get("MULTIPLAY_HOSTED", "").strip() == "1"
+_PROJECT_DIR_ENV = os.environ.get("MULTIPLAY_PROJECT_DIR", "").strip() or None
+SESSION_MANAGER: SessionManager  # initialized in main()
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -1044,16 +1051,6 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def _get_or_create_session(self) -> Session:
         """Get or create a session from the X-Session-Id header."""
-        if _FIXED_PROJECT_DIR is not None:
-            if not hasattr(AppHandler, "_fixed_session"):
-                AppHandler._fixed_session = Session(
-                    id="fixed",
-                    project_dir=Path(_FIXED_PROJECT_DIR),
-                    lock=threading.Lock(),
-                    last_active=time.monotonic(),
-                )
-            return AppHandler._fixed_session
-
         client_id = self.headers.get(SESSION_HEADER_NAME)
         session, _created = SESSION_MANAGER.get_or_create(client_id)
         return session
@@ -1080,15 +1077,21 @@ class AppHandler(BaseHTTPRequestHandler):
                     "python_versions": list(SUPPORTED_PYTHON_VERSIONS),
                     "tool_order": list(TOOL_ORDER),
                     "enabled_tools": list(TOOL_ORDER),
+                    "local_checkers_enabled": not HOSTED_MODE,
                     "initial_ruff_repo_path": "",
                     "initial_python_tool_repo_paths": {},
                     "tool_versions": dict(TOOL_VERSIONS),
+                    "hosted_mode": HOSTED_MODE,
                     "session_id": session.id[:8],
+                    "temp_dir": str(session.project_dir),
                 },
             )
             return
 
         if path == "/api/dir-fingerprint":
+            if HOSTED_MODE:
+                _json_response(self, HTTPStatus.FORBIDDEN, {"error": "Local checker directories are not available in hosted mode"})
+                return
             qs = parse_qs(urlsplit(self.path).query)
             raw_path = (qs.get("path") or [None])[0]
             try:
@@ -1145,8 +1148,12 @@ class AppHandler(BaseHTTPRequestHandler):
             dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
             python_version = _normalize_python_version(body.get("python_version"))
             refresh_venv = bool(body.get("refresh_venv"))
-            ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
-            python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
+            if HOSTED_MODE:
+                ruff_repo_path = None
+                python_tool_repo_paths = {}
+            else:
+                ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
+                python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
 
@@ -1179,6 +1186,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                             "tool_versions": dict(TOOL_VERSIONS),
                             "session_id": session.id[:8],
+                            "temp_dir": str(project_dir),
                         },
                     )
                     return
@@ -1200,7 +1208,9 @@ class AppHandler(BaseHTTPRequestHandler):
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                     "dependency_install": dependency_install,
+                    "hosted_mode": HOSTED_MODE,
                     "session_id": session.id[:8],
+                    "temp_dir": str(project_dir),
                 })
 
                 try:
@@ -1284,6 +1294,14 @@ def _session_reaper_loop(manager: SessionManager, interval: float, max_idle: flo
 
 
 def main() -> None:
+    global SESSION_MANAGER
+
+    if HOSTED_MODE and _PROJECT_DIR_ENV:
+        raise SystemExit("MULTIPLAY_HOSTED=1 and MULTIPLAY_PROJECT_DIR cannot be used together")
+
+    fixed_dir = Path(_PROJECT_DIR_ENV) if _PROJECT_DIR_ENV else None
+    SESSION_MANAGER = SessionManager(fixed_project_dir=fixed_dir)
+
     if not STATIC_DIR.is_dir():
         raise SystemExit(f"Static directory not found: {STATIC_DIR}")
 
@@ -1308,17 +1326,20 @@ def main() -> None:
         except OSError:
             port += 1
 
-    if _FIXED_PROJECT_DIR is not None:
-        print(f"Single-session mode: MULTIPLAY_PROJECT_DIR={_FIXED_PROJECT_DIR}")
+    reaper = threading.Thread(
+        target=_session_reaper_loop,
+        args=(SESSION_MANAGER, SESSION_REAPER_INTERVAL_SECONDS, SESSION_MAX_IDLE_SECONDS),
+        daemon=True,
+    )
+    reaper.start()
+
+    if HOSTED_MODE:
+        print("Hosted mode: local checkers disabled, session ID shown in UI")
     else:
-        # Start the session reaper daemon thread.
-        reaper = threading.Thread(
-            target=_session_reaper_loop,
-            args=(SESSION_MANAGER, SESSION_REAPER_INTERVAL_SECONDS, SESSION_MAX_IDLE_SECONDS),
-            daemon=True,
-        )
-        reaper.start()
-        print(f"Per-session mode (idle timeout: {SESSION_MAX_IDLE_SECONDS}s)")
+        print("Local mode: local checkers enabled, temp dir shown in UI")
+    if _PROJECT_DIR_ENV:
+        print(f"Project directory: {_PROJECT_DIR_ENV} (shared across all sessions)")
+    print(f"Per-tab sessions (idle timeout: {SESSION_MAX_IDLE_SECONDS}s)")
 
     print(f"Static directory: {STATIC_DIR}")
     print(f"\nServing app on \033[1;4;32mhttp://{args.host}:{port}\033[0m")
