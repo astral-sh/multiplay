@@ -244,6 +244,27 @@ def _normalize_ruff_repo_path(raw: Any) -> Path | None:
     return resolved
 
 
+def _normalize_ty_binary_path(raw: Any) -> Path | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+
+    text = raw.strip()
+    if not text:
+        return None
+
+    path = Path(text).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return None
+
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
 def _get_dir_fingerprint(path: Path) -> str:
     """Return a fingerprint that changes when the repo's source state changes.
 
@@ -463,7 +484,17 @@ def _command_for_tool(
     python_tool_repo_paths: dict[str, Path] | None = None,
     file_paths: list[str] | None = None,
     python_version: str = DEFAULT_PYTHON_VERSION,
+    ty_binary_path: Path | None = None,
 ) -> list[str]:
+    # Custom ty binary: use the binary directly instead of the PyPI version.
+    if spec.name == "ty" and ty_binary_path is not None:
+        command = [str(ty_binary_path), "check"]
+        command.extend(["--python-version", python_version])
+        if venv_python is not None:
+            command.extend(["--python", str(venv_python)])
+        py_files = [f for f in (file_paths or []) if f.endswith(".py")]
+        return [*command, *(py_files or ["."])]
+
     repo_path = (python_tool_repo_paths or {}).get(spec.name)
     command = (
         _command_for_local_python_tool(spec, repo_path)
@@ -740,6 +771,7 @@ def _run_all_tools(
     timeout_seconds: int = 120,
     file_paths: list[str] | None = None,
     python_version: str = DEFAULT_PYTHON_VERSION,
+    ty_binary_path: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     env_overrides = _venv_env_overrides(venv_python)
@@ -749,7 +781,7 @@ def _run_all_tools(
         return results
 
     command_by_tool = {
-        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version)
+        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version, ty_binary_path)
         for spec in selected_specs
     }
     with ThreadPoolExecutor(max_workers=max(1, len(selected_specs))) as executor:
@@ -789,13 +821,14 @@ def _iter_all_tools(
     file_paths: list[str] | None = None,
     ruff_repo_path: Path | None = None,
     python_version: str = DEFAULT_PYTHON_VERSION,
+    ty_binary_path: Path | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield (tool_name, result) pairs as each tool finishes."""
     env_overrides = _venv_env_overrides(venv_python)
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
 
     command_by_tool: dict[str, list[str]] = {
-        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version)
+        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version, ty_binary_path)
         for spec in selected_specs
     }
 
@@ -814,7 +847,7 @@ def _iter_all_tools(
                 tool_name,
                 command,
                 project_dir,
-                timeout_seconds,
+                LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS if (tool_name == "ty" and ty_binary_path is not None) else timeout_seconds,
                 env_overrides,
             ): tool_name
             for tool_name, command in command_by_tool.items()
@@ -989,6 +1022,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "tool_order": list(TOOL_ORDER),
                     "enabled_tools": list(TOOL_ORDER),
                     "initial_ruff_repo_path": "",
+                    "initial_ty_binary_path": "",
                     "initial_python_tool_repo_paths": {},
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
@@ -1051,6 +1085,7 @@ class AppHandler(BaseHTTPRequestHandler):
             python_version = _normalize_python_version(body.get("python_version"))
             refresh_venv = bool(body.get("refresh_venv"))
             ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
+            ty_binary_path = _normalize_ty_binary_path(body.get("ty_binary_path"))
             python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
@@ -1083,6 +1118,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "enabled_tools": enabled_tools,
                             "tool_order": tool_order,
                             "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
+                            "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
                             "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                             "tool_versions": dict(TOOL_VERSIONS),
                             "temp_dir": str(PROJECT_DIR),
@@ -1105,6 +1141,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "enabled_tools": enabled_tools,
                     "tool_order": tool_order,
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
+                    "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                     "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
@@ -1120,6 +1157,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         file_paths=file_paths,
                         ruff_repo_path=ruff_repo_path if RUFF_TY_TOOL_NAME in enabled_tools else None,
                         python_version=python_version,
+                        ty_binary_path=ty_binary_path,
                     ):
                         _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
                     _ndjson_send(self, {"type": "done"})

@@ -431,6 +431,10 @@ h1 {
   font-size: 0.86em;
 }
 
+.deps-note-error {
+  color: var(--error-text);
+}
+
 .advanced-section-label {
   display: block;
   font-size: 0.82rem;
@@ -1417,4 +1421,56 @@ body.server-down .container {
 body.server-down .results {
   opacity: 0.5;
   transition: opacity 0.3s ease;
+}
+
+/* Restored-options banner */
+.restored-toast {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 72px;
+  padding: 24px 16px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: var(--sans);
+  transform: translateY(-100%);
+  opacity: 0;
+  transition: transform 0.3s ease, opacity 0.8s ease;
+  pointer-events: none;
+}
+
+.restored-toast.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.restored-toast-heading {
+  font-size: 1.05rem;
+}
+
+.restored-toast-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-weight: 400;
+  font-size: 0.85rem;
+  opacity: 0.9;
+  text-align: center;
+}
+
+.restored-toast-list li::before {
+  content: "\b7  ";
 }
