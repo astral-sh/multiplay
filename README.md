@@ -24,6 +24,12 @@ uv run multiplay
 
 Then open [http://localhost:8000](http://localhost:8000).
 
+Or, to start the server and automatically open it in your default browser:
+
+```bash
+./run.sh
+```
+
 ### Docker
 
 ```bash

@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import webbrowser
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1213,6 +1214,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip startup tool install priming (default: prime enabled)",
     )
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="Open the app in the default browser after starting",
+    )
     return parser.parse_args()
 
 
@@ -1242,7 +1248,11 @@ def main() -> None:
             port += 1
     print(f"Static directory: {STATIC_DIR}")
     print(f"Temporary project directory: {PROJECT_DIR}")
-    print(f"\nServing app on \033[1;4;32mhttp://{args.host}:{port}\033[0m")
+    url = f"http://{args.host}:{port}"
+    print(f"\nServing app on \033[1;4;32m{url}\033[0m")
+
+    if args.open:
+        webbrowser.open(url)
 
     try:
         server.serve_forever()
