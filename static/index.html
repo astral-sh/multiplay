@@ -29,15 +29,6 @@
         <details class="advanced-config" id="dependencies-config">
         <summary>Advanced options</summary>
         <div class="advanced-config-body">
-          <label class="advanced-section-label">Dependencies</label>
-          <textarea
-            id="dependencies"
-            class="deps-input deps-textarea"
-            rows="1"
-            placeholder="requests, pydantic, types-requests"
-            spellcheck="false"
-          ></textarea>
-          <p class="status deps-note">Comma or newline separated. Installed with <code>uv pip install</code> in temp project.</p>
           <label class="advanced-section-label">Custom checker options</label>
           <div class="deps-row">
             <label class="deps-label" for="ty-binary-path">Custom ty binary</label>
@@ -93,6 +84,7 @@
             <option value="3.12">3.12</option>
             <option value="3.13">3.13</option>
             <option value="3.14" selected>3.14</option>
+            <option value="" title="Don't pass --python-version to type checkers; let each tool detect the version automatically">not specified</option>
           </select>
         </label>
       </div>
