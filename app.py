@@ -39,9 +39,8 @@ DEFAULT_FILES = [
         ),
     },
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
-    {"name": "pyproject.toml", "content": ""},
+    {"name": "pyproject.toml", "content": '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n'},
 ]
-DEFAULT_DEPENDENCIES: list[str] = []
 SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 DEFAULT_PYTHON_VERSION = "3.14"
 
@@ -164,34 +163,9 @@ def _command_env() -> dict[str, str]:
     env.setdefault("CLICOLOR_FORCE", "1")
     env.setdefault("PY_COLORS", "1")
     env.pop("NO_COLOR", None)
+    env.pop("VIRTUAL_ENV", None)
     return env
 
-
-def _normalize_dependencies(raw: Any) -> list[str]:
-    if raw is None:
-        return []
-
-    candidates: list[str]
-    if isinstance(raw, str):
-        candidates = re.split(r"[\n,]", raw)
-    elif isinstance(raw, list):
-        candidates = []
-        for item in raw:
-            if not isinstance(item, str):
-                raise ValueError("Dependencies list must contain only strings")
-            candidates.append(item)
-    else:
-        raise ValueError("Dependencies must be a list of strings or a comma/newline separated string")
-
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for dep in candidates:
-        value = dep.strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        normalized.append(value)
-    return normalized
 
 
 def _normalize_enabled_tools(raw: Any) -> list[str]:
@@ -289,12 +263,15 @@ def _get_dir_fingerprint(path: Path) -> str:
     return head + "\n" + status
 
 
-def _normalize_python_version(raw: Any) -> str:
+def _normalize_python_version(raw: Any) -> str | None:
     if raw is None:
         return DEFAULT_PYTHON_VERSION
     if not isinstance(raw, str):
         raise ValueError("python_version must be a string")
     value = raw.strip()
+    # "" means "not specified" — let tools use their own heuristics.
+    if value == "":
+        return None
     if value not in SUPPORTED_PYTHON_VERSIONS:
         allowed = ", ".join(SUPPORTED_PYTHON_VERSIONS)
         raise ValueError(f"Unsupported python_version {value!r}; expected one of: {allowed}")
@@ -371,80 +348,13 @@ def _venv_python_path(project_dir: Path) -> Path | None:
     return None
 
 
-def _run_uv_pip_install(project_dir: Path, dependencies: list[str], timeout_seconds: int = 300) -> dict[str, Any]:
-    if not dependencies:
-        return {
-            "ran": False,
-            "command": "",
-            "returncode": 0,
-            "duration_ms": 0,
-            "output": "",
-            "dependencies": [],
-        }
-
+def _run_uv_sync(project_dir: Path, timeout_seconds: int = 300) -> dict[str, Any]:
     env = _command_env()
     started = time.perf_counter()
-    output_parts: list[str] = []
-
-    # Create a venv if one doesn't already exist.
-    venv_dir = project_dir / ".venv"
-    if not venv_dir.exists():
-        venv_command = ["uv", "venv", str(venv_dir)]
-        try:
-            completed = subprocess.run(
-                venv_command,
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                env=env,
-                check=False,
-            )
-            output_parts.append((completed.stdout or "") + (completed.stderr or ""))
-            if completed.returncode != 0:
-                duration_ms = int((time.perf_counter() - started) * 1000)
-                return {
-                    "ran": True,
-                    "command": " ".join(venv_command),
-                    "returncode": completed.returncode,
-                    "duration_ms": duration_ms,
-                    "output": "".join(output_parts),
-                    "dependencies": dependencies,
-                }
-        except FileNotFoundError as exc:
-            return {
-                "ran": True,
-                "command": " ".join(venv_command),
-                "returncode": -1,
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-                "output": f"Command not found: {exc}",
-                "dependencies": dependencies,
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "ran": True,
-                "command": " ".join(venv_command),
-                "returncode": -2,
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-                "output": f"Timed out after {timeout_seconds}s: {' '.join(venv_command)}",
-                "dependencies": dependencies,
-            }
-
-    # Install dependencies into the venv.
-    venv_python = _venv_python_path(project_dir)
-    if venv_python is None:
-        return {
-            "ran": True,
-            "command": "uv pip install",
-            "returncode": -1,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-            "output": f"Could not find Python in venv at {venv_dir}",
-            "dependencies": dependencies,
-        }
-    install_command = ["uv", "pip", "install", "--python", str(venv_python), *dependencies]
+    command = ["uv", "sync"]
     try:
         completed = subprocess.run(
-            install_command,
+            command,
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -452,23 +362,22 @@ def _run_uv_pip_install(project_dir: Path, dependencies: list[str], timeout_seco
             env=env,
             check=False,
         )
-        output_parts.append((completed.stdout or "") + (completed.stderr or ""))
+        output = (completed.stdout or "") + (completed.stderr or "")
         returncode = completed.returncode
     except FileNotFoundError as exc:
-        output_parts.append(f"Command not found: {exc}")
+        output = f"Command not found: {exc}"
         returncode = -1
     except subprocess.TimeoutExpired:
-        output_parts.append(f"Timed out after {timeout_seconds}s: {' '.join(install_command)}")
+        output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
         returncode = -2
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
         "ran": True,
-        "command": " ".join(install_command),
+        "command": " ".join(command),
         "returncode": returncode,
         "duration_ms": duration_ms,
-        "output": "".join(output_parts),
-        "dependencies": dependencies,
+        "output": output,
     }
 
 
@@ -481,48 +390,44 @@ def _command_for_local_python_tool(spec: ToolSpec, repo_path: Path) -> list[str]
 
 def _command_for_tool(
     spec: ToolSpec,
-    venv_python: Path | None,
     python_tool_repo_paths: dict[str, Path] | None = None,
     file_paths: list[str] | None = None,
-    python_version: str = DEFAULT_PYTHON_VERSION,
+    python_version: str | None = DEFAULT_PYTHON_VERSION,
     ty_binary_path: Path | None = None,
+    venv_python: Path | None = None,
 ) -> list[str]:
     # Custom ty binary: use the binary directly instead of the PyPI version.
     if spec.name == "ty" and ty_binary_path is not None:
         command = [str(ty_binary_path), "check"]
-        command.extend(["--python-version", python_version])
+        if python_version:
+            command.extend(["--python-version", python_version])
         if venv_python is not None:
             command.extend(["--python", str(venv_python)])
         py_files = [f for f in (file_paths or []) if f.endswith(".py")]
         return [*command, *(py_files or ["."])]
 
     repo_path = (python_tool_repo_paths or {}).get(spec.name)
-    command = (
-        _command_for_local_python_tool(spec, repo_path)
-        if repo_path is not None
-        else list(spec.command)
-    )
+    if repo_path is not None:
+        command = _command_for_local_python_tool(spec, repo_path)
+    else:
+        # Run tools via `uv run --with=<tool>` so they use the project's venv.
+        command = ["uv", "run", f"--with={spec.name}", *spec.command]
 
-    if spec.name == "mypy":
-        command.extend(["--python-version", python_version])
-    elif spec.name == "pyright":
-        command.extend(["--pythonversion", python_version])
-    elif spec.name == "pyrefly":
-        command.extend(["--python-version", python_version])
-    elif spec.name == "ty":
-        command.extend(["--python-version", python_version])
-    elif spec.name == "zuban":
-        command.extend(["--python-version", python_version])
+    if python_version:
+        if spec.name == "mypy":
+            command.extend(["--python-version", python_version])
+        elif spec.name == "pyright":
+            command.extend(["--pythonversion", python_version])
+        elif spec.name == "pyrefly":
+            command.extend(["--python-version", python_version])
+        elif spec.name == "ty":
+            command.extend(["--python-version", python_version])
+        elif spec.name == "zuban":
+            command.extend(["--python-version", python_version])
 
-    # Tools are installed into the venv. Run them with the venv's Python via
-    # "python -m <tool>" so they can resolve imports from installed packages.
-    if venv_python is not None and repo_path is None and command:
-        if spec.name == "zuban":
-            # zuban doesn't support "python -m zuban"; run the bin entry point
-            # with --python-executable so it knows where to find dependencies.
-            command = [*command, "--python-executable", str(venv_python)]
-        else:
-            command = [str(venv_python), "-m", command[0], *command[1:]]
+    # zuban needs --python-executable to find packages installed in the project venv.
+    if spec.name == "zuban" and venv_python is not None and repo_path is None:
+        command.extend(["--python-executable", str(venv_python)])
 
     # Pass explicit files so that zuban/pycroscope don't type-check the venv.
     # The other type checkers handle "." fine, but explicit files work for all.
@@ -586,18 +491,16 @@ def _extract_version(output: str) -> str:
     return "unknown"
 
 
-def _detect_tool_versions(cwd: Path, venv_python: Path | None = None, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
+def _detect_tool_versions(cwd: Path, timeout_seconds: int = 60) -> dict[str, dict[str, Any]]:
     version_results: dict[str, dict[str, Any]] = {}
     env = _command_env()
-    overrides = _venv_env_overrides(venv_python)
-    if overrides:
-        env.update(overrides)
 
     for spec in TOOL_SPECS:
+        version_command = ["uv", "run", f"--with={spec.name}", *spec.version_command]
         started = time.perf_counter()
         try:
             completed = subprocess.run(
-                spec.version_command,
+                version_command,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -615,14 +518,14 @@ def _detect_tool_versions(cwd: Path, venv_python: Path | None = None, timeout_se
             returncode = -1
             version = "unknown"
         except subprocess.TimeoutExpired:
-            combined = f"Timed out after {timeout_seconds}s: {' '.join(spec.version_command)}"
+            combined = f"Timed out after {timeout_seconds}s: {' '.join(version_command)}"
             returncode = -2
             version = "unknown"
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         version_results[spec.name] = {
             "tool": spec.name,
-            "command": " ".join(spec.version_command),
+            "command": " ".join(version_command),
             "returncode": returncode,
             "duration_ms": duration_ms,
             "version": version,
@@ -738,11 +641,12 @@ def _venv_env_overrides(venv_python: Path | None) -> dict[str, str] | None:
 def _ruff_ty_command(
     ruff_repo_path: Path,
     venv_python: Path | None,
-    python_version: str = DEFAULT_PYTHON_VERSION,
+    python_version: str | None = DEFAULT_PYTHON_VERSION,
 ) -> list[str]:
     manifest = ruff_repo_path / "Cargo.toml"
     command = ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--bin", "ty", "--", "check"]
-    command.extend(["--python-version", python_version])
+    if python_version:
+        command.extend(["--python-version", python_version])
     if venv_python is not None:
         command.extend(["--python", str(venv_python)])
     return command
@@ -752,7 +656,7 @@ def _run_ruff_ty_from_repo(
     ruff_repo_path: Path,
     project_dir: Path,
     venv_python: Path | None,
-    python_version: str,
+    python_version: str | None,
     timeout_seconds: int | None,
 ) -> dict[str, Any]:
     return _run_command(
@@ -764,72 +668,24 @@ def _run_ruff_ty_from_repo(
     )
 
 
-def _run_all_tools(
-    project_dir: Path,
-    venv_python: Path | None = None,
-    python_tool_repo_paths: dict[str, Path] | None = None,
-    enabled_tools: list[str] | None = None,
-    timeout_seconds: int = 120,
-    file_paths: list[str] | None = None,
-    python_version: str = DEFAULT_PYTHON_VERSION,
-    ty_binary_path: Path | None = None,
-) -> dict[str, dict[str, Any]]:
-    results: dict[str, dict[str, Any]] = {}
-    env_overrides = _venv_env_overrides(venv_python)
-
-    selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools]
-    if not selected_specs:
-        return results
-
-    command_by_tool = {
-        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version, ty_binary_path)
-        for spec in selected_specs
-    }
-    with ThreadPoolExecutor(max_workers=max(1, len(selected_specs))) as executor:
-        futures = {
-            executor.submit(
-                _run_command,
-                tool_name,
-                command,
-                project_dir,
-                timeout_seconds,
-                env_overrides,
-            ): tool_name
-            for tool_name, command in command_by_tool.items()
-        }
-        for future in as_completed(futures):
-            tool_name = futures[future]
-            command = command_by_tool[tool_name]
-            try:
-                results[tool_name] = future.result()
-            except Exception as exc:  # pragma: no cover
-                results[tool_name] = {
-                    "tool": tool_name,
-                    "command": " ".join(command),
-                    "returncode": -3,
-                    "duration_ms": 0,
-                    "output": f"Internal error: {exc}",
-                }
-    return results
-
-
 def _iter_all_tools(
     project_dir: Path,
-    venv_python: Path | None = None,
     python_tool_repo_paths: dict[str, Path] | None = None,
     enabled_tools: list[str] | None = None,
     timeout_seconds: int = 120,
     file_paths: list[str] | None = None,
     ruff_repo_path: Path | None = None,
-    python_version: str = DEFAULT_PYTHON_VERSION,
+    python_version: str | None = DEFAULT_PYTHON_VERSION,
     ty_binary_path: Path | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield (tool_name, result) pairs as each tool finishes."""
-    env_overrides = _venv_env_overrides(venv_python)
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
 
+    # venv_python is needed for: custom ty binary (--python flag) and zuban (--python-executable).
+    venv_python = _venv_python_path(project_dir)
+
     command_by_tool: dict[str, list[str]] = {
-        spec.name: _command_for_tool(spec, venv_python, python_tool_repo_paths, file_paths, python_version, ty_binary_path)
+        spec.name: _command_for_tool(spec, python_tool_repo_paths, file_paths, python_version, ty_binary_path, venv_python)
         for spec in selected_specs
     }
 
@@ -841,6 +697,9 @@ def _iter_all_tools(
     if total_workers == 0:
         return
 
+    # For ruff_ty (cargo-built ty), we need venv_python for package resolution.
+    ruff_ty_venv_python = _venv_python_path(project_dir) if include_ruff_ty else None
+
     with ThreadPoolExecutor(max_workers=max(1, total_workers)) as executor:
         futures = {
             executor.submit(
@@ -849,7 +708,7 @@ def _iter_all_tools(
                 command,
                 project_dir,
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS if (tool_name == "ty" and ty_binary_path is not None) else timeout_seconds,
-                env_overrides,
+                None,
             ): tool_name
             for tool_name, command in command_by_tool.items()
         }
@@ -859,7 +718,7 @@ def _iter_all_tools(
                 _run_ruff_ty_from_repo,
                 ruff_repo_path,
                 project_dir,
-                venv_python,
+                ruff_ty_venv_python,
                 python_version,
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
             )] = RUFF_TY_TOOL_NAME
@@ -879,11 +738,15 @@ def _iter_all_tools(
 
 
 def _prime_tool_installs() -> dict[str, dict[str, Any]]:
-    """Install all tools into a venv in PROJECT_DIR and detect versions."""
-    tool_packages = [spec.name for spec in TOOL_SPECS]
-    _run_uv_pip_install(PROJECT_DIR, tool_packages)
-    venv_python = _venv_python_path(PROJECT_DIR)
-    return _detect_tool_versions(PROJECT_DIR, venv_python)
+    """Write a default pyproject.toml and run uv sync, then detect versions."""
+    pyproject_path = PROJECT_DIR / "pyproject.toml"
+    if not pyproject_path.exists():
+        pyproject_path.write_text(
+            '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n',
+            encoding="utf-8",
+        )
+    _run_uv_sync(PROJECT_DIR)
+    return _detect_tool_versions(PROJECT_DIR)
 
 
 def _resolve_static_file(url_path: str) -> Path | None:
@@ -931,26 +794,18 @@ def _fetch_gist(gist_id: str) -> dict[str, Any]:
         raise RuntimeError(f"Failed to fetch gist {gist_id}: {exc.reason}") from exc
 
     raw_files = data.get("files", {})
-    metadata: dict[str, Any] = {}
     files: list[dict[str, str]] = []
     for filename, info in raw_files.items():
         content = info.get("content", "")
+        # Skip legacy metadata file from older gists.
         if filename == "_multiplay_metadata.json":
-            try:
-                metadata = json.loads(content)
-            except json.JSONDecodeError:
-                pass
             continue
         files.append({"name": filename, "content": content})
 
-    dependencies = metadata.get("dependencies", [])
-    if not isinstance(dependencies, list):
-        dependencies = []
-
-    return {"files": files, "dependencies": dependencies}
+    return {"files": files}
 
 
-def _create_gist(files: list[dict[str, Any]], dependencies: list[str]) -> dict[str, str]:
+def _create_gist(files: list[dict[str, Any]]) -> dict[str, str]:
     tmp = Path(tempfile.mkdtemp(prefix="multiplay-gist-"))
     try:
         paths: list[str] = []
@@ -962,10 +817,6 @@ def _create_gist(files: list[dict[str, Any]], dependencies: list[str]) -> dict[s
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content, encoding="utf-8")
             paths.append(str(dest))
-
-        metadata_path = tmp / "_multiplay_metadata.json"
-        metadata_path.write_text(json.dumps({"dependencies": dependencies}), encoding="utf-8")
-        paths.append(str(metadata_path))
 
         result = subprocess.run(
             ["gh", "gist", "create", "--public", *paths],
@@ -1017,9 +868,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "initial_files": DEFAULT_FILES,
-                    "initial_dependencies": DEFAULT_DEPENDENCIES,
                     "initial_python_version": DEFAULT_PYTHON_VERSION,
-                    "python_versions": list(SUPPORTED_PYTHON_VERSIONS),
+                    "python_versions": [*SUPPORTED_PYTHON_VERSIONS, ""],
                     "tool_order": list(TOOL_ORDER),
                     "enabled_tools": list(TOOL_ORDER),
                     "initial_ruff_repo_path": "",
@@ -1082,9 +932,7 @@ class AppHandler(BaseHTTPRequestHandler):
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
-            dependencies = _normalize_dependencies(body.get("dependencies", DEFAULT_DEPENDENCIES))
             python_version = _normalize_python_version(body.get("python_version"))
-            refresh_venv = bool(body.get("refresh_venv"))
             ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
             ty_binary_path = _normalize_ty_binary_path(body.get("ty_binary_path"))
             python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
@@ -1094,28 +942,16 @@ class AppHandler(BaseHTTPRequestHandler):
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files)
 
-                if refresh_venv:
-                    venv_dir = PROJECT_DIR / ".venv"
-                    if venv_dir.exists():
-                        shutil.rmtree(venv_dir)
-                    tool_packages = [spec.name for spec in TOOL_SPECS]
-                    packages_to_install = tool_packages + dependencies
-                else:
-                    packages_to_install = dependencies
-
-                dependency_install = _run_uv_pip_install(
-                    PROJECT_DIR, packages_to_install
-                )
-                if dependency_install["returncode"] != 0:
+                sync_result = _run_uv_sync(PROJECT_DIR)
+                if sync_result["returncode"] != 0:
                     _json_response(
                         self,
                         HTTPStatus.BAD_REQUEST,
                         {
-                            "error": "Dependency install failed",
+                            "error": "uv sync failed",
                             "error_type": "dependency_install_failed",
-                            "dependency_install": dependency_install,
-                            "dependencies": dependencies,
-                            "python_version": python_version,
+                            "dependency_install": sync_result,
+                            "python_version": python_version or "",
                             "enabled_tools": enabled_tools,
                             "tool_order": tool_order,
                             "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
@@ -1127,7 +963,6 @@ class AppHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                venv_python = _venv_python_path(PROJECT_DIR)
                 base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
                 file_paths = [str(entry.get("name", "")) for entry in files]
 
@@ -1136,22 +971,19 @@ class AppHandler(BaseHTTPRequestHandler):
                 _ndjson_send(self, {
                     "type": "metadata",
                     "tool_versions": dict(TOOL_VERSIONS),
-                    "dependencies": dependencies,
-                    "python_version": python_version,
-                    "python_versions": list(SUPPORTED_PYTHON_VERSIONS),
+                    "python_version": python_version or "",
+                    "python_versions": [*SUPPORTED_PYTHON_VERSIONS, ""],
                     "enabled_tools": enabled_tools,
                     "tool_order": tool_order,
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                     "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
-                    "dependency_install": dependency_install,
                     "temp_dir": str(PROJECT_DIR),
                 })
 
                 try:
                     for tool_name, result in _iter_all_tools(
                         PROJECT_DIR,
-                        venv_python,
                         python_tool_repo_paths,
                         base_enabled_tools,
                         timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
@@ -1177,8 +1009,7 @@ class AppHandler(BaseHTTPRequestHandler):
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
-            dependencies = _normalize_dependencies(body.get("dependencies"))
-            result = _create_gist(files, dependencies)
+            result = _create_gist(files)
             _json_response(self, HTTPStatus.OK, result)
         except ValueError as exc:
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})

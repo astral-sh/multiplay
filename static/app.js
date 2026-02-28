@@ -1,5 +1,5 @@
 const STORAGE_KEY = "multiplay_state";
-const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"];
+const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", ""];
 const DEFAULT_PYTHON_VERSION = "3.14";
 
 function saveState() {
@@ -8,7 +8,6 @@ function saveState() {
       STORAGE_KEY,
       JSON.stringify({
         files: state.files.map((f) => ({ name: f.name, content: f.content })),
-        dependencies: state.dependencies.slice(),
         pythonVersion: state.pythonVersion,
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
@@ -50,9 +49,6 @@ function loadSavedState() {
     }
     return {
       files,
-      dependencies: Array.isArray(data.dependencies)
-        ? data.dependencies.filter((d) => typeof d === "string")
-        : [],
       pythonVersion: typeof data.pythonVersion === "string" ? data.pythonVersion : DEFAULT_PYTHON_VERSION,
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
@@ -104,7 +100,6 @@ let draggedFileIndex = null;
 
 const state = {
   files: [],
-  dependencies: [],
   pythonVersion: DEFAULT_PYTHON_VERSION,
   pythonVersionOptions: DEFAULT_PYTHON_VERSION_OPTIONS.slice(),
   ruffRepoPath: "",
@@ -120,7 +115,6 @@ const state = {
   toolVersions: {},
   toolSettings: {},
   lastResults: {},
-  refreshVenv: false,
   currentController: null,
 };
 
@@ -234,8 +228,6 @@ function startRuffDirWatcher() {
 }
 
 const tabsEl = document.getElementById("tabs");
-const depsInputEl = document.getElementById("dependencies");
-const dependenciesConfigEl = document.getElementById("dependencies-config");
 const pythonVersionEl = document.getElementById("python-version");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const tyBinaryPathEl = document.getElementById("ty-binary-path");
@@ -336,7 +328,6 @@ async function handleShare() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         files: state.files.map((f) => ({ name: f.name, content: f.content })),
-        dependencies: state.dependencies.slice(),
       }),
     });
     const body = await resp.json();
@@ -403,13 +394,6 @@ async function handleLoadGist() {
 
     state.files = normalizedFiles;
     state.activeIndex = 0;
-
-    const deps = Array.isArray(body.dependencies)
-      ? body.dependencies.filter((d) => typeof d === "string").map((d) => d.trim()).filter((d) => d.length > 0)
-      : [];
-    state.dependencies = deps;
-    depsInputEl.value = dependenciesToText(state.dependencies);
-    syncDependenciesSectionOpen();
 
     saveState();
     renderTabs();
@@ -623,22 +607,17 @@ function clearDependencyInstallError() {
 }
 
 function showDependencyInstallError(info) {
-  const command = typeof info?.command === "string" && info.command ? info.command : "uv pip install ...";
+  const command = typeof info?.command === "string" && info.command ? info.command : "uv sync";
   const returnCode = typeof info?.returncode === "number" ? info.returncode : "?";
   const durationMs = typeof info?.duration_ms === "number" ? info.duration_ms : "?";
-  const dependencies = Array.isArray(info?.dependencies)
-    ? info.dependencies.filter((dep) => typeof dep === "string" && dep.trim().length > 0)
-    : [];
-  const depsText = dependencies.length > 0 ? dependencies.join(", ") : "(none)";
   const output = typeof info?.output === "string" ? info.output : "";
 
   depErrorEl.innerHTML =
-    `<div class="dep-error-title">Dependency install failed</div>` +
+    `<div class="dep-error-title">Dependency sync failed</div>` +
     `<p class="dep-error-meta">` +
     `Could not run <code>${escapeHtml(command)}</code> ` +
     `(exit ${escapeHtml(String(returnCode))}, ${escapeHtml(String(durationMs))}ms).` +
     `</p>` +
-    `<p class="dep-error-meta">Requested: <code>${escapeHtml(depsText)}</code></p>` +
     `<pre>${ansiToHtml(output || "(no output)")}</pre>`;
   depErrorEl.classList.remove("hidden");
 }
@@ -1302,9 +1281,22 @@ function renderTabs() {
     const removeBtn = document.createElement("button");
     removeBtn.className = "tab-icon tab-remove";
     removeBtn.type = "button";
-    removeBtn.title = `Remove ${file.name}`;
     removeBtn.textContent = "×";
-    removeBtn.disabled = state.files.length <= 1;
+    const isPy = file.name.endsWith(".py") || file.name.endsWith(".pyi");
+    const isLastPy = isPy && state.files.filter((f) => f.name.endsWith(".py") || f.name.endsWith(".pyi")).length <= 1;
+    if (file.name === "pyproject.toml") {
+      removeBtn.disabled = true;
+      removeBtn.title = "pyproject.toml is required and cannot be removed";
+    } else if (isLastPy) {
+      removeBtn.disabled = true;
+      removeBtn.title = "At least one Python file is required";
+    } else if (state.files.length <= 1) {
+      removeBtn.disabled = true;
+      removeBtn.title = `Remove ${file.name}`;
+    } else {
+      removeBtn.disabled = false;
+      removeBtn.title = `Remove ${file.name}`;
+    }
     removeBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1397,34 +1389,6 @@ function normalizeName(name) {
   return name.trim().replace(/\\/g, "/");
 }
 
-function parseDependencies(raw) {
-  if (typeof raw !== "string") {
-    return [];
-  }
-
-  const seen = new Set();
-  const deps = [];
-  for (const part of raw.split(/[\n,]/)) {
-    const value = part.trim();
-    if (!value || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    deps.push(value);
-  }
-  return deps;
-}
-
-function dependenciesToText(dependencies) {
-  return dependencies.join(", ");
-}
-
-function syncDependenciesSectionOpen() {
-  if (!dependenciesConfigEl) {
-    return;
-  }
-  dependenciesConfigEl.open = state.dependencies.length > 0;
-}
 
 function normalizeToolList(raw) {
   if (!Array.isArray(raw)) {
@@ -1459,7 +1423,11 @@ function normalizePythonVersionOptions(raw) {
       continue;
     }
     const value = item.trim();
-    if (!value || seen.has(value)) {
+    // Allow "" (meaning "not specified") but skip other falsy/duplicate values.
+    if (value !== "" && !value) {
+      continue;
+    }
+    if (seen.has(value)) {
       continue;
     }
     seen.add(value);
@@ -1486,7 +1454,10 @@ function setPythonVersionOptions(rawOptions) {
   state.pythonVersionOptions.forEach((version) => {
     const option = document.createElement("option");
     option.value = version;
-    option.textContent = version;
+    option.textContent = version || "not specified";
+    if (version === "") {
+      option.title = "Don't pass --python-version to type checkers; let each tool detect the version automatically";
+    }
     pythonVersionEl.appendChild(option);
   });
 
@@ -1587,15 +1558,6 @@ function enabledTools() {
   });
 }
 
-function updateDependenciesFromInput({ triggerAnalyze = false } = {}) {
-  const parsed = parseDependencies(depsInputEl.value);
-  state.dependencies = parsed;
-  syncDependenciesSectionOpen();
-  state.refreshVenv = true;
-  if (triggerAnalyze) {
-    scheduleAnalyze();
-  }
-}
 
 function updatePythonVersionFromInput({ triggerAnalyze = false } = {}) {
   const normalized = normalizePythonVersion(pythonVersionEl.value, state.pythonVersionOptions);
@@ -1706,6 +1668,9 @@ function updateActiveFileContent(content) {
 
 function startTabRename(index) {
   if (index < 0 || index >= state.files.length) {
+    return;
+  }
+  if (state.files[index].name === "pyproject.toml") {
     return;
   }
   state.activeIndex = index;
@@ -2256,13 +2221,9 @@ async function analyze({ onlyTools } = {}) {
   state.currentOnlyTools = onlyTools || null;
 
   const toolsToSend = onlyTools || enabledTools();
-  const refreshVenv = state.refreshVenv;
-  state.refreshVenv = false;
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
-    dependencies: state.dependencies.slice(),
     python_version: state.pythonVersion,
-    refresh_venv: refreshVenv,
     ruff_repo_path: state.ruffRepoPath,
     ty_binary_path: state.tyBinaryPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
@@ -2373,17 +2334,24 @@ const TOOL_DEFAULT_CONFIG = {
 };
 
 function buildPyprojectContent() {
+  const projectSection = '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []';
   const seen = new Set();
-  const sections = [];
+  const withDefaults = [];
+  const withoutDefaults = [];
   for (const name of toolOrder) {
     const header = toolConfigSection(name);
     if (!seen.has(header)) {
       seen.add(header);
       const defaults = TOOL_DEFAULT_CONFIG[name] || "";
-      sections.push(defaults ? `${header}\n${defaults}` : header);
+      if (defaults) {
+        withDefaults.push(`${header}\n${defaults}`);
+      } else {
+        withoutDefaults.push(header);
+      }
     }
   }
-  return sections.join("\n\n\n") + "\n";
+  const sections = [...withDefaults, ...withoutDefaults];
+  return projectSection + "\n\n\n" + sections.join("\n\n\n") + "\n";
 }
 
 /** Fill in empty pyproject.toml content in state.files using current toolOrder. */
@@ -2584,10 +2552,6 @@ function bindEvents() {
   editorEl.addEventListener("click", updateColGuideCursor);
   editorEl.addEventListener("select", updateColGuideCursor);
 
-  depsInputEl.addEventListener("input", () => {
-    updateDependenciesFromInput({ triggerAnalyze: true });
-  });
-
   pythonVersionEl.addEventListener("change", () => {
     updatePythonVersionFromInput({ triggerAnalyze: true });
   });
@@ -2700,16 +2664,6 @@ function loadFromBootstrap(body) {
     state.toolVersions = {};
   }
 
-  if (Array.isArray(body.initial_dependencies)) {
-    state.dependencies = body.initial_dependencies
-      .filter((dep) => typeof dep === "string")
-      .map((dep) => dep.trim())
-      .filter((dep) => dep.length > 0);
-  } else {
-    state.dependencies = [];
-  }
-  depsInputEl.value = dependenciesToText(state.dependencies);
-  syncDependenciesSectionOpen();
   state.pythonVersion = normalizePythonVersion(body.initial_python_version, state.pythonVersionOptions);
   pythonVersionEl.value = state.pythonVersion;
 
@@ -2723,8 +2677,13 @@ function loadFromBootstrap(body) {
 
 function showRestoredOptionsToast() {
   const restored = [];
-  if (state.dependencies.length > 0) {
-    restored.push("Dependencies: " + state.dependencies.join(", "));
+  // Check if pyproject.toml has non-empty dependencies
+  const pyproj = state.files.find((f) => f.name === "pyproject.toml");
+  if (pyproj && pyproj.content) {
+    const depsMatch = pyproj.content.match(/^dependencies\s*=\s*\[([^\]]*)\]/m);
+    if (depsMatch && depsMatch[1].trim()) {
+      restored.push("Dependencies (in pyproject.toml): " + depsMatch[1].trim());
+    }
   }
   if (state.tyBinaryPath) {
     restored.push("Custom ty binary: " + state.tyBinaryPath);
@@ -2786,7 +2745,6 @@ async function bootstrap() {
     loadFromBootstrap(body);
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
-    state.dependencies = [];
     state.pythonVersion = DEFAULT_PYTHON_VERSION;
     setPythonVersionOptions(DEFAULT_PYTHON_VERSION_OPTIONS);
     state.ruffRepoPath = "";
@@ -2796,8 +2754,6 @@ async function bootstrap() {
     state.toolSettings = {};
     ensureToolSettings();
     state.lastResults = {};
-    depsInputEl.value = "";
-    syncDependenciesSectionOpen();
     pythonVersionEl.value = state.pythonVersion;
     ruffRepoPathEl.value = "";
     tyBinaryPathEl.value = "";
@@ -2807,14 +2763,11 @@ async function bootstrap() {
     setStatus("Bootstrap failed, using defaults: " + err.message);
   }
 
-  // Restore persisted editor state (files, dependencies, active tab) from localStorage
+  // Restore persisted editor state (files, active tab) from localStorage
   const saved = loadSavedState();
   if (saved) {
     state.files = saved.files;
     state.activeIndex = Math.min(saved.activeIndex, saved.files.length - 1);
-    state.dependencies = saved.dependencies;
-    depsInputEl.value = dependenciesToText(state.dependencies);
-    syncDependenciesSectionOpen();
     state.pythonVersion = normalizePythonVersion(saved.pythonVersion, state.pythonVersionOptions);
     pythonVersionEl.value = state.pythonVersion;
     state.ruffRepoPath = saved.ruffRepoPath;
@@ -2850,7 +2803,6 @@ async function bootstrap() {
   renderTabs();
   syncEditorFromState();
   startRuffDirWatcher();
-  state.refreshVenv = true;
   analyze();
 }
 
