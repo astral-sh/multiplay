@@ -994,6 +994,7 @@ def _create_gist(files: list[dict[str, Any]], dependencies: list[str]) -> dict[s
 
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "MultifileEditor/2.0"
+    protocol_version = "HTTP/1.1"
 
     def handle_one_request(self) -> None:
         try:
