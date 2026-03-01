@@ -1687,6 +1687,28 @@ function cancelTabRename() {
   renderTabs();
 }
 
+function showRenameError(message) {
+  const input = tabsEl.querySelector(".tab-rename");
+  if (!input) return;
+  // Remove any previous error state
+  input.classList.remove("tab-rename-error");
+  const prev = input.parentElement.querySelector(".tab-rename-error-msg");
+  if (prev) prev.remove();
+  // Force reflow so re-adding the class restarts the animation
+  void input.offsetWidth;
+  input.classList.add("tab-rename-error");
+  // Add tooltip
+  const tip = document.createElement("span");
+  tip.className = "tab-rename-error-msg";
+  tip.textContent = message;
+  input.parentElement.appendChild(tip);
+  // Auto-clear after animation
+  setTimeout(() => {
+    input.classList.remove("tab-rename-error");
+    tip.remove();
+  }, 2500);
+}
+
 function finishTabRename(index, rawName, keepOpenOnError) {
   if (state.renamingIndex !== index) {
     return true;
@@ -1701,8 +1723,8 @@ function finishTabRename(index, rawName, keepOpenOnError) {
 
   const normalized = normalizeName(rawName);
   if (!normalized) {
-    setStatus("Filename cannot be empty");
     if (keepOpenOnError) {
+      showRenameError("Filename cannot be empty");
       return false;
     }
     state.renamingIndex = -1;
@@ -1711,13 +1733,32 @@ function finishTabRename(index, rawName, keepOpenOnError) {
   }
 
   if (!isUniqueName(normalized, index)) {
-    setStatus("Duplicate filename: " + normalized);
     if (keepOpenOnError) {
+      showRenameError("Duplicate filename: " + normalized);
       return false;
     }
     state.renamingIndex = -1;
     renderTabs();
     return false;
+  }
+
+  const oldExt = extensionOf(file.name);
+  const newExt = extensionOf(normalized);
+  const oldIsPy = oldExt === ".py" || oldExt === ".pyi";
+  const newIsPy = newExt === ".py" || newExt === ".pyi";
+  if (oldIsPy && !newIsPy) {
+    const pyCount = state.files.filter(
+      (f) => f.name.endsWith(".py") || f.name.endsWith(".pyi"),
+    ).length;
+    if (pyCount <= 1) {
+      if (keepOpenOnError) {
+        showRenameError("At least one Python file is required");
+        return false;
+      }
+      state.renamingIndex = -1;
+      renderTabs();
+      return false;
+    }
   }
 
   const changed = normalized !== file.name;

@@ -591,7 +591,36 @@ h1 {
   box-shadow: 0 0 0 2px rgba(13, 122, 111, 0.18);
 }
 
+.tab-rename.tab-rename-error {
+  border-color: var(--error, #e53935);
+  box-shadow: 0 0 0 2px rgba(229, 57, 53, 0.25);
+  animation: tab-rename-shake 0.3s ease;
+}
+
+.tab-rename-error-msg {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--error, #e53935);
+  color: #fff;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  z-index: 10;
+  pointer-events: none;
+}
+
+@keyframes tab-rename-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
 .tab-item {
+  position: relative;
   display: flex;
   gap: 4px;
   align-items: center;
