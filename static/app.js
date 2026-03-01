@@ -1271,6 +1271,8 @@ function renderTabs() {
         saveState();
         syncEditorFromState();
         syncActiveTabClasses();
+      } else {
+        startTabRename(idx);
       }
     });
     btn.addEventListener("dblclick", (event) => {
