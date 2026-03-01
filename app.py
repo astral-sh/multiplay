@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import mimetypes
 import os
@@ -19,13 +17,14 @@ import urllib.error
 import urllib.request
 import uuid
 import webbrowser
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
-
 
 DEFAULT_FILES = [
     {
@@ -424,6 +423,9 @@ def _command_for_tool(
             command.extend(["--python-version", python_version])
         elif spec.name == "zuban":
             command.extend(["--python-version", python_version])
+
+    if spec.name == "pycroscope":
+        command.extend(["--config-file", "pyproject.toml"])
 
     # zuban needs --python-executable to find packages installed in the project venv.
     if spec.name == "zuban" and venv_python is not None and repo_path is None:
