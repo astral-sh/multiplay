@@ -2973,22 +2973,44 @@ function initCardResize(handle, card) {
 // panel so trackpad scrolling over the config/tabs/editor area scrolls results
 // when those elements have no scrollbar of their own.
 (function initLeftColumnScrollForwarding() {
+  // Check whether an element can still scroll in a given axis/direction.
+  function canScroll(el, axis, delta) {
+    const T = 1; // tolerance for sub-pixel rounding
+    if (axis === "x") {
+      if (el.scrollWidth - el.clientWidth < T) return false;
+      return delta < 0 ? el.scrollLeft > T
+                       : el.scrollLeft + el.clientWidth < el.scrollWidth - T;
+    }
+    if (el.scrollHeight - el.clientHeight < T) return false;
+    return delta < 0 ? el.scrollTop > T
+                     : el.scrollTop + el.clientHeight < el.scrollHeight - T;
+  }
+
+  // Forward a wheel event to the results panel, but only for axes that the
+  // source element cannot scroll itself.  This preserves native horizontal
+  // scrolling (e.g. wide editor content) while still forwarding vertical
+  // scroll to the results panel when the left column has nothing to scroll.
+  function forwardWheel(e, scrollableEl) {
+    if (window.innerWidth < 981) return;
+
+    const fwdX = scrollableEl && canScroll(scrollableEl, "x", e.deltaX) ? 0 : e.deltaX;
+    const fwdY = scrollableEl && canScroll(scrollableEl, "y", e.deltaY) ? 0 : e.deltaY;
+
+    if (fwdX === 0 && fwdY === 0) return;     // nothing to forward
+
+    resultsEl.scrollBy({ left: fwdX, top: fwdY });
+    if (fwdX === e.deltaX && fwdY === e.deltaY) e.preventDefault();
+  }
+
   const targets = document.querySelectorAll(".header-config, .tabs-wrap");
   targets.forEach((el) => {
-    el.addEventListener("wheel", (e) => {
-      if (window.innerWidth < 981) return;
-      resultsEl.scrollBy({ left: e.deltaX, top: e.deltaY });
-      e.preventDefault();
-    }, { passive: false });
+    el.addEventListener("wheel", (e) => forwardWheel(e, null), { passive: false });
   });
 
-  // Editor area: forward to results only when the editor has no scrollbar.
+  // Editor area: forward to results only for axes the editor can't scroll.
   const editorWrap = document.querySelector(".editor-wrap");
   editorWrap.addEventListener("wheel", (e) => {
-    if (window.innerWidth < 981) return;
-    if (editorEl.scrollHeight > editorEl.clientHeight) return;
-    resultsEl.scrollBy({ left: e.deltaX, top: e.deltaY });
-    e.preventDefault();
+    forwardWheel(e, editorEl);
   }, { passive: false, capture: true });
 })();
 
