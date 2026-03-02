@@ -482,10 +482,19 @@ def _command_for_tool(
 
     repo_path = (python_tool_repo_paths or {}).get(spec.name)
     if repo_path is not None:
-        command = _command_for_local_python_tool(spec, repo_path)
+        if spec.name == "pycroscope":
+            # pycroscope needs module-style invocation to resolve sibling imports.
+            requirement = f"{spec.name} @ {repo_path}"
+            command = ["uv", "run", "--with-editable", requirement, "python", "-m", "pycroscope"]
+        else:
+            command = _command_for_local_python_tool(spec, repo_path)
     else:
         # Run tools via `uv run --with=<tool>` so they use the project's venv.
-        command = ["uv", "run", f"--with={spec.name}", *spec.command]
+        # pycroscope is invoked as a module to preserve import resolution behavior.
+        if spec.name == "pycroscope":
+            command = ["uv", "run", "--with=pycroscope", "python", "-m", "pycroscope"]
+        else:
+            command = ["uv", "run", f"--with={spec.name}", *spec.command]
 
     if python_version:
         if spec.name == "mypy":
