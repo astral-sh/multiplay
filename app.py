@@ -69,11 +69,24 @@ RUFF_TY_TOOL_NAME = "ty_ruff"
 PYTHON_IMPLEMENTED_TOOLS = ("mypy", "pycroscope")
 
 
+def _int_env(name: str, default: int, *, min_value: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
+    if value < min_value:
+        raise SystemExit(f"{name} must be >= {min_value}, got {value}")
+    return value
+
+
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_DIR = APP_ROOT / "static"
 SERVER_ID = uuid.uuid4().hex
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
-ANALYZE_TOOL_TIMEOUT_SECONDS = 10
+ANALYZE_TOOL_TIMEOUT_SECONDS = _int_env("MULTIPLAY_ANALYZE_TOOL_TIMEOUT_SECONDS", 10)
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
 SESSION_MAX_IDLE_SECONDS = 30 * 60  # 30 minutes
 SESSION_REAPER_INTERVAL_SECONDS = 60
@@ -1299,6 +1312,7 @@ def main() -> None:
     if _PROJECT_DIR_ENV:
         print(f"Project directory: {_PROJECT_DIR_ENV} (shared across all sessions)")
     print(f"Per-tab sessions (idle timeout: {SESSION_MAX_IDLE_SECONDS}s)")
+    print(f"Analyze timeout per tool: {ANALYZE_TOOL_TIMEOUT_SECONDS}s")
 
     print(f"Static directory: {STATIC_DIR}")
     url = f"http://{args.host}:{port}"
