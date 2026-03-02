@@ -72,11 +72,79 @@ PYTHON_IMPLEMENTED_TOOLS = ("mypy", "pycroscope")
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_DIR = APP_ROOT / "static"
 SERVER_ID = uuid.uuid4().hex
-STATE_LOCK = threading.Lock()
-PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 10
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
+SESSION_MAX_IDLE_SECONDS = 30 * 60  # 30 minutes
+SESSION_REAPER_INTERVAL_SECONDS = 60
+SESSION_HEADER_NAME = "X-Session-Id"
+
+
+@dataclass
+class Session:
+    id: str
+    project_dir: Path
+    lock: threading.Lock
+    last_active: float  # time.monotonic()
+
+
+class SessionManager:
+    def __init__(self) -> None:
+        self._sessions: dict[str, Session] = {}
+        self._manager_lock = threading.Lock()
+
+    def get_or_create(self, session_id: str | None) -> tuple[Session, bool]:
+        """Return (session, created). If session_id is None or unknown, create a new one."""
+        with self._manager_lock:
+            if session_id and session_id in self._sessions:
+                session = self._sessions[session_id]
+                session.last_active = time.monotonic()
+                return session, False
+
+            sid = session_id if session_id else uuid.uuid4().hex
+            project_dir = Path(tempfile.mkdtemp(prefix=f"multiplay-{sid[:8]}-"))
+            session = Session(
+                id=sid,
+                project_dir=project_dir,
+                lock=threading.Lock(),
+                last_active=time.monotonic(),
+            )
+            self._sessions[sid] = session
+            print(f"[session] Created {sid[:8]}… → {project_dir}")
+            return session, True
+
+    def reap_stale(self, max_idle_seconds: float) -> int:
+        """Remove sessions idle longer than max_idle_seconds. Returns count removed."""
+        now = time.monotonic()
+        to_remove: list[Session] = []
+        with self._manager_lock:
+            for sid, session in list(self._sessions.items()):
+                if now - session.last_active > max_idle_seconds:
+                    to_remove.append(session)
+                    del self._sessions[sid]
+
+        for session in to_remove:
+            print(f"[session] Reaping {session.id[:8]}… (idle {int(now - session.last_active)}s)")
+            shutil.rmtree(session.project_dir, ignore_errors=True)
+
+        return len(to_remove)
+
+    def destroy_all(self) -> None:
+        """Clean up all sessions (for shutdown)."""
+        with self._manager_lock:
+            for session in self._sessions.values():
+                shutil.rmtree(session.project_dir, ignore_errors=True)
+            self._sessions.clear()
+
+    @property
+    def count(self) -> int:
+        with self._manager_lock:
+            return len(self._sessions)
+
+
+SESSION_MANAGER = SessionManager()
+# When MULTIPLAY_PROJECT_DIR is set, use a single shared session (original behavior).
+_FIXED_PROJECT_DIR = os.environ.get("MULTIPLAY_PROJECT_DIR")
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -740,15 +808,17 @@ def _iter_all_tools(
 
 
 def _prime_tool_installs() -> dict[str, dict[str, Any]]:
-    """Write a default pyproject.toml and run uv sync, then detect versions."""
-    pyproject_path = PROJECT_DIR / "pyproject.toml"
-    if not pyproject_path.exists():
-        pyproject_path.write_text(
+    """Warm the uv cache in a throwaway project dir and detect tool versions."""
+    prime_dir = Path(tempfile.mkdtemp(prefix="multiplay-prime-"))
+    try:
+        (prime_dir / "pyproject.toml").write_text(
             '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n',
             encoding="utf-8",
         )
-    _run_uv_sync(PROJECT_DIR)
-    return _detect_tool_versions(PROJECT_DIR)
+        _run_uv_sync(prime_dir)
+        return _detect_tool_versions(prime_dir)
+    finally:
+        shutil.rmtree(prime_dir, ignore_errors=True)
 
 
 def _resolve_static_file(url_path: str) -> Path | None:
@@ -894,17 +964,37 @@ class AppHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}")
 
+    def _get_or_create_session(self) -> Session:
+        """Get or create a session from the X-Session-Id header."""
+        if _FIXED_PROJECT_DIR is not None:
+            if not hasattr(AppHandler, "_fixed_session"):
+                AppHandler._fixed_session = Session(
+                    id="fixed",
+                    project_dir=Path(_FIXED_PROJECT_DIR),
+                    lock=threading.Lock(),
+                    last_active=time.monotonic(),
+                )
+            return AppHandler._fixed_session
+
+        client_id = self.headers.get(SESSION_HEADER_NAME)
+        session, _created = SESSION_MANAGER.get_or_create(client_id)
+        return session
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
 
         if path == "/api/health":
-            _json_response(self, HTTPStatus.OK, {"ok": True, "server_id": SERVER_ID, "temp_dir": str(PROJECT_DIR)})
+            session = self._get_or_create_session()
+            _json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "server_id": SERVER_ID,
+                "session_id": session.id[:8],
+            })
             return
 
         if path == "/api/bootstrap":
-            _json_response(
-                self,
-                HTTPStatus.OK,
+            session = self._get_or_create_session()
+            _json_response(self, HTTPStatus.OK,
                 {
                     "initial_files": DEFAULT_FILES,
                     "initial_python_version": DEFAULT_PYTHON_VERSION,
@@ -915,7 +1005,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "initial_ty_binary_path": "",
                     "initial_python_tool_repo_paths": {},
                     "tool_versions": dict(TOOL_VERSIONS),
-                    "temp_dir": str(PROJECT_DIR),
+                    "session_id": session.id[:8],
                 },
             )
             return
@@ -967,6 +1057,9 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            session = self._get_or_create_session()
+            project_dir = session.project_dir
+
             body = self._read_json_body()
             files = body.get("files")
             if not isinstance(files, list) or not files:
@@ -978,10 +1071,10 @@ class AppHandler(BaseHTTPRequestHandler):
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
 
-            with STATE_LOCK:
-                _write_files_to_project(PROJECT_DIR, files)
+            with session.lock:
+                _write_files_to_project(project_dir, files)
 
-                sync_result = _run_uv_sync(PROJECT_DIR)
+                sync_result = _run_uv_sync(project_dir)
                 if sync_result["returncode"] != 0:
                     _json_response(
                         self,
@@ -997,7 +1090,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
                             "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                             "tool_versions": dict(TOOL_VERSIONS),
-                            "temp_dir": str(PROJECT_DIR),
+                            "session_id": session.id[:8],
                         },
                     )
                     return
@@ -1017,12 +1110,12 @@ class AppHandler(BaseHTTPRequestHandler):
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                     "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
-                    "temp_dir": str(PROJECT_DIR),
+                    "session_id": session.id[:8],
                 })
 
                 try:
                     for tool_name, result in _iter_all_tools(
-                        PROJECT_DIR,
+                        project_dir,
                         python_tool_repo_paths,
                         base_enabled_tools,
                         timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
@@ -1092,6 +1185,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _session_reaper_loop(manager: SessionManager, interval: float, max_idle: float) -> None:
+    """Background thread that periodically reaps stale sessions."""
+    while True:
+        time.sleep(interval)
+        try:
+            reaped = manager.reap_stale(max_idle)
+            if reaped:
+                print(f"[session] Reaped {reaped} stale session(s), {manager.count} active")
+        except Exception as exc:  # pragma: no cover
+            print(f"[session] Reaper error: {exc}")
+
+
 def main() -> None:
     if not STATIC_DIR.is_dir():
         raise SystemExit(f"Static directory not found: {STATIC_DIR}")
@@ -1099,7 +1204,7 @@ def main() -> None:
     args = parse_args()
 
     if not args.skip_prime:
-        print("Priming tool installs...")
+        print("Priming tool installs (warming uv cache)...")
         version_results = _prime_tool_installs()
         for spec in TOOL_SPECS:
             version_info = version_results.get(spec.name, {})
@@ -1116,8 +1221,20 @@ def main() -> None:
             break
         except OSError:
             port += 1
+
+    if _FIXED_PROJECT_DIR is not None:
+        print(f"Single-session mode: MULTIPLAY_PROJECT_DIR={_FIXED_PROJECT_DIR}")
+    else:
+        # Start the session reaper daemon thread.
+        reaper = threading.Thread(
+            target=_session_reaper_loop,
+            args=(SESSION_MANAGER, SESSION_REAPER_INTERVAL_SECONDS, SESSION_MAX_IDLE_SECONDS),
+            daemon=True,
+        )
+        reaper.start()
+        print(f"Per-session mode (idle timeout: {SESSION_MAX_IDLE_SECONDS}s)")
+
     print(f"Static directory: {STATIC_DIR}")
-    print(f"Temporary project directory: {PROJECT_DIR}")
     url = f"http://{args.host}:{port}"
     print(f"\nServing app on \033[1;4;32m{url}\033[0m")
 
@@ -1129,9 +1246,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-        # On Windows, temp directories aren't automatically cleaned up.
-        if os.name == "nt":
-            shutil.rmtree(PROJECT_DIR, ignore_errors=True)
+        SESSION_MANAGER.destroy_all()
         # os._exit() is a thin wrapper around the _exit(2) syscall that
         # terminates the process immediately, skipping atexit handlers,
         # finally blocks in other threads, and stdio buffer flushing.
