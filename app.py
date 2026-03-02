@@ -796,10 +796,28 @@ def _fetch_gist(gist_id: str) -> dict[str, Any]:
         raise RuntimeError(f"Failed to fetch gist {gist_id}: {exc.reason}") from exc
 
     raw_files = data.get("files", {})
-    files: list[dict[str, str]] = []
+
+    # Check for metadata with original filename mapping.
+    meta_info = raw_files.get("_multiplay_metadata.json")
+    if meta_info:
+        try:
+            meta = json.loads(meta_info.get("content", "{}"))
+            file_mapping = meta.get("file_mapping", {})
+            if file_mapping:
+                files: list[dict[str, str]] = []
+                for gist_name, info in raw_files.items():
+                    if gist_name == "_multiplay_metadata.json":
+                        continue
+                    original_name = file_mapping.get(gist_name, gist_name)
+                    files.append({"name": original_name, "content": info.get("content", "")})
+                return {"files": files}
+        except (json.JSONDecodeError, KeyError):
+            pass  # Fall through to legacy handling.
+
+    # Legacy: no metadata file.
+    files = []
     for filename, info in raw_files.items():
         content = info.get("content", "")
-        # Skip legacy metadata file from older gists.
         if filename == "_multiplay_metadata.json":
             continue
         files.append({"name": filename, "content": content})
@@ -808,41 +826,60 @@ def _fetch_gist(gist_id: str) -> dict[str, Any]:
 
 
 def _create_gist(files: list[dict[str, Any]]) -> dict[str, str]:
-    tmp = Path(tempfile.mkdtemp(prefix="multiplay-gist-"))
-    try:
-        paths: list[str] = []
-        for entry in files:
-            name = str(entry.get("name", ""))
-            content = entry.get("content", "")
-            rel = _safe_relative_path(name)
-            dest = tmp / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-            paths.append(str(dest))
+    gist_files: dict[str, dict[str, str]] = {}
+    file_mapping: dict[str, str] = {}  # safe gist name -> original name
+    used_names: set[str] = set()
 
+    for entry in files:
+        name = str(entry.get("name", ""))
+        content = entry.get("content", "")
+        rel = _safe_relative_path(name)
+        original = str(rel)
+
+        # Create a flat filename safe for gists (no directory separators).
+        safe = original.replace("/", "-")
+        if safe in used_names:
+            stem, ext = os.path.splitext(safe)
+            counter = 1
+            while f"{stem}_{counter}{ext}" in used_names:
+                counter += 1
+            safe = f"{stem}_{counter}{ext}"
+
+        used_names.add(safe)
+        file_mapping[safe] = original
+        gist_files[safe] = {"content": content}
+
+    # Include metadata so the original nested filenames can be recovered.
+    gist_files["_multiplay_metadata.json"] = {
+        "content": json.dumps({"version": 1, "file_mapping": file_mapping})
+    }
+
+    payload = json.dumps({"public": True, "files": gist_files})
+
+    try:
         result = subprocess.run(
-            ["gh", "gist", "create", "--public", *paths],
+            ["gh", "api", "--method", "POST", "/gists", "--input", "-"],
+            input=payload,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
         )
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            raise RuntimeError(f"gh gist create failed (exit {result.returncode}): {stderr}")
-
-        gist_url = result.stdout.strip()
-        if not gist_url:
-            raise RuntimeError("gh gist create returned no URL")
-
-        gist_id = gist_url.rstrip("/").rsplit("/", 1)[-1]
-        return {"gist_url": gist_url, "gist_id": gist_id}
     except FileNotFoundError as exc:
         raise RuntimeError(
             "gh CLI not found. Install it (https://cli.github.com) and run `gh auth login`."
         ) from exc
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(f"gh gist create failed (exit {result.returncode}): {stderr}")
+
+    data = json.loads(result.stdout)
+    gist_url = data.get("html_url", "")
+    gist_id = data.get("id", "")
+    if not gist_id:
+        raise RuntimeError("gh gist create returned no URL")
+    return {"gist_url": gist_url, "gist_id": gist_id}
 
 
 class AppHandler(BaseHTTPRequestHandler):
