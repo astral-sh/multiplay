@@ -459,9 +459,7 @@ def _command_for_tool(
             command.extend(["--typeshed-path", str(typeshed_path)])
         elif spec.name == "ty":
             command.extend(["--typeshed", str(typeshed_path)])
-        elif spec.name == "pycroscope":
-            command.extend(["--stub-path", str(typeshed_path)])
-        # zuban currently has no CLI flag for overriding typeshed.
+        # zuban/pycroscope currently have no CLI flag for overriding typeshed.
 
     if spec.name == "pycroscope":
         command.extend(["--config-file", "pyproject.toml"])
@@ -726,7 +724,7 @@ def _iter_all_tools(
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield (tool_name, result) pairs as each tool finishes."""
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
-    skip_zuban_for_typeshed = typeshed_path is not None
+    unsupported_typeshed_tools = {"zuban", "pycroscope"} if typeshed_path is not None else set()
 
     # venv_python is needed for: custom ty binary (--python flag) and zuban (--python-executable).
     venv_python = _venv_python_path(project_dir)
@@ -734,7 +732,7 @@ def _iter_all_tools(
     skipped_results: dict[str, dict[str, Any]] = {}
     runnable_specs: list[ToolSpec] = []
     for spec in selected_specs:
-        if skip_zuban_for_typeshed and spec.name == "zuban":
+        if spec.name in unsupported_typeshed_tools:
             skipped_results[spec.name] = {
                 "tool": spec.name,
                 "command": "",
