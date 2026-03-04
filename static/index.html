@@ -42,6 +42,17 @@
           </div>
           <p class="status deps-note" id="ty-binary-path-note">Use a pre-built <code>ty</code> binary instead of the PyPI version.</p>
           <div class="deps-row">
+            <label class="deps-label" for="typeshed-path">Custom typeshed directory</label>
+            <input
+              id="typeshed-path"
+              class="deps-input"
+              type="text"
+              placeholder="/path/to/typeshed"
+              spellcheck="false"
+            />
+          </div>
+          <p class="status deps-note">Passes a custom typeshed directory to type checkers that support a typeshed override.</p>
+          <div class="deps-row">
             <label class="deps-label" for="ruff-repo-path">Local Ruff clone</label>
             <input
               id="ruff-repo-path"

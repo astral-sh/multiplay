@@ -239,6 +239,29 @@ def _normalize_ty_binary_path(raw: Any) -> Path | None:
     return resolved
 
 
+def _normalize_typeshed_path(raw: Any) -> Path | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("typeshed_path must be a string")
+
+    text = raw.strip()
+    if not text:
+        return None
+
+    path = Path(text).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Typeshed path does not exist: {text!r}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not resolve typeshed path {text!r}: {exc}") from exc
+
+    if not resolved.is_dir():
+        raise ValueError(f"Typeshed path is not a directory: {text!r}")
+    return resolved
+
+
 def _get_dir_fingerprint(path: Path) -> str:
     """Return a fingerprint that changes when the repo's source state changes.
 
@@ -394,12 +417,15 @@ def _command_for_tool(
     python_version: str | None = DEFAULT_PYTHON_VERSION,
     ty_binary_path: Path | None = None,
     venv_python: Path | None = None,
+    typeshed_path: Path | None = None,
 ) -> list[str]:
     # Custom ty binary: use the binary directly instead of the PyPI version.
     if spec.name == "ty" and ty_binary_path is not None:
         command = [str(ty_binary_path), "check"]
         if python_version:
             command.extend(["--python-version", python_version])
+        if typeshed_path is not None:
+            command.extend(["--typeshed", str(typeshed_path)])
         if venv_python is not None:
             command.extend(["--python", str(venv_python)])
         py_files = [f for f in (file_paths or []) if f.endswith(".py")]
@@ -423,6 +449,19 @@ def _command_for_tool(
             command.extend(["--python-version", python_version])
         elif spec.name == "zuban":
             command.extend(["--python-version", python_version])
+
+    if typeshed_path is not None:
+        if spec.name == "mypy":
+            command.extend(["--custom-typeshed-dir", str(typeshed_path)])
+        elif spec.name == "pyright":
+            command.extend(["--typeshedpath", str(typeshed_path)])
+        elif spec.name == "pyrefly":
+            command.extend(["--typeshed-path", str(typeshed_path)])
+        elif spec.name == "ty":
+            command.extend(["--typeshed", str(typeshed_path)])
+        elif spec.name == "pycroscope":
+            command.extend(["--stub-path", str(typeshed_path)])
+        # zuban currently has no CLI flag for overriding typeshed.
 
     if spec.name == "pycroscope":
         command.extend(["--config-file", "pyproject.toml"])
@@ -644,11 +683,14 @@ def _ruff_ty_command(
     ruff_repo_path: Path,
     venv_python: Path | None,
     python_version: str | None = DEFAULT_PYTHON_VERSION,
+    typeshed_path: Path | None = None,
 ) -> list[str]:
     manifest = ruff_repo_path / "Cargo.toml"
     command = ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--bin", "ty", "--", "check"]
     if python_version:
         command.extend(["--python-version", python_version])
+    if typeshed_path is not None:
+        command.extend(["--typeshed", str(typeshed_path)])
     if venv_python is not None:
         command.extend(["--python", str(venv_python)])
     return command
@@ -659,11 +701,12 @@ def _run_ruff_ty_from_repo(
     project_dir: Path,
     venv_python: Path | None,
     python_version: str | None,
+    typeshed_path: Path | None,
     timeout_seconds: int | None,
 ) -> dict[str, Any]:
     return _run_command(
         RUFF_TY_TOOL_NAME,
-        _ruff_ty_command(ruff_repo_path, venv_python, python_version),
+        _ruff_ty_command(ruff_repo_path, venv_python, python_version, typeshed_path),
         project_dir,
         timeout_seconds,
         _venv_env_overrides(venv_python),
@@ -679,16 +722,32 @@ def _iter_all_tools(
     ruff_repo_path: Path | None = None,
     python_version: str | None = DEFAULT_PYTHON_VERSION,
     ty_binary_path: Path | None = None,
+    typeshed_path: Path | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield (tool_name, result) pairs as each tool finishes."""
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
+    skip_zuban_for_typeshed = typeshed_path is not None
 
     # venv_python is needed for: custom ty binary (--python flag) and zuban (--python-executable).
     venv_python = _venv_python_path(project_dir)
 
+    skipped_results: dict[str, dict[str, Any]] = {}
+    runnable_specs: list[ToolSpec] = []
+    for spec in selected_specs:
+        if skip_zuban_for_typeshed and spec.name == "zuban":
+            skipped_results[spec.name] = {
+                "tool": spec.name,
+                "command": "",
+                "returncode": 0,
+                "duration_ms": 0,
+                "output": "(custom typeshed not supported)",
+            }
+        else:
+            runnable_specs.append(spec)
+
     command_by_tool: dict[str, list[str]] = {
-        spec.name: _command_for_tool(spec, python_tool_repo_paths, file_paths, python_version, ty_binary_path, venv_python)
-        for spec in selected_specs
+        spec.name: _command_for_tool(spec, python_tool_repo_paths, file_paths, python_version, ty_binary_path, venv_python, typeshed_path)
+        for spec in runnable_specs
     }
 
     # Include ruff_ty in the same executor so it runs in parallel.
@@ -697,7 +756,12 @@ def _iter_all_tools(
 
     total_workers = len(command_by_tool) + (1 if include_ruff_ty else 0)
     if total_workers == 0:
+        for tool_name, result in skipped_results.items():
+            yield tool_name, result
         return
+
+    for tool_name, result in skipped_results.items():
+        yield tool_name, result
 
     # For ruff_ty (cargo-built ty), we need venv_python for package resolution.
     ruff_ty_venv_python = _venv_python_path(project_dir) if include_ruff_ty else None
@@ -722,6 +786,7 @@ def _iter_all_tools(
                 project_dir,
                 ruff_ty_venv_python,
                 python_version,
+                typeshed_path,
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
             )] = RUFF_TY_TOOL_NAME
 
@@ -914,6 +979,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "enabled_tools": list(TOOL_ORDER),
                     "initial_ruff_repo_path": "",
                     "initial_ty_binary_path": "",
+                    "initial_typeshed_path": "",
                     "initial_python_tool_repo_paths": {},
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
@@ -975,6 +1041,7 @@ class AppHandler(BaseHTTPRequestHandler):
             python_version = _normalize_python_version(body.get("python_version"))
             ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
             ty_binary_path = _normalize_ty_binary_path(body.get("ty_binary_path"))
+            typeshed_path = _normalize_typeshed_path(body.get("typeshed_path"))
             python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
@@ -996,6 +1063,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "tool_order": tool_order,
                             "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                             "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
+                            "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
                             "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                             "tool_versions": dict(TOOL_VERSIONS),
                             "temp_dir": str(PROJECT_DIR),
@@ -1017,6 +1085,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "tool_order": tool_order,
                     "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
                     "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
+                    "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
                     "temp_dir": str(PROJECT_DIR),
                 })
@@ -1031,6 +1100,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         ruff_repo_path=ruff_repo_path if RUFF_TY_TOOL_NAME in enabled_tools else None,
                         python_version=python_version,
                         ty_binary_path=ty_binary_path,
+                        typeshed_path=typeshed_path,
                     ):
                         _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
                     _ndjson_send(self, {"type": "done"})

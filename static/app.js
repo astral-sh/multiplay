@@ -12,6 +12,7 @@ function saveState() {
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
         tyBinaryPath: state.tyBinaryPath,
+        typeshedPath: state.typeshedPath,
         toolOrder: toolOrder.slice(),
         toolSettings: state.toolSettings,
       }),
@@ -53,6 +54,7 @@ function loadSavedState() {
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
       tyBinaryPath: typeof data.tyBinaryPath === "string" ? data.tyBinaryPath : "",
+      typeshedPath: typeof data.typeshedPath === "string" ? data.typeshedPath : "",
       toolOrder: savedToolOrder,
       toolSettings: savedToolSettings,
     };
@@ -104,6 +106,7 @@ const state = {
   pythonVersionOptions: DEFAULT_PYTHON_VERSION_OPTIONS.slice(),
   ruffRepoPath: "",
   tyBinaryPath: "",
+  typeshedPath: "",
   resolvedTyBinaryPath: null,
   pythonToolRepoPaths: {},
   activeIndex: 0,
@@ -232,6 +235,7 @@ const pythonVersionEl = document.getElementById("python-version");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
 const tyBinaryPathEl = document.getElementById("ty-binary-path");
 const tyBinaryPathNoteEl = document.getElementById("ty-binary-path-note");
+const typeshedPathEl = document.getElementById("typeshed-path");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
 const lineNumbersEl = document.getElementById("line-numbers");
@@ -1475,6 +1479,10 @@ function normalizeTyBinaryPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
 
+function normalizeTypeshedPath(raw) {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
 function normalizePythonToolRepoPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
@@ -1606,6 +1614,22 @@ function updateTyBinaryPathFromInput({ triggerAnalyze, writeBack = true } = { tr
   syncTyBinaryPathNote();
   saveState();
   renderResults(state.lastResults);
+
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updateTypeshedPathFromInput({ triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
+  const normalized = normalizeTypeshedPath(typeshedPathEl.value);
+  if (writeBack) {
+    typeshedPathEl.value = normalized;
+  }
+  if (normalized === state.typeshedPath) {
+    return;
+  }
+
+  state.typeshedPath = normalized;
 
   if (triggerAnalyze) {
     scheduleAnalyze();
@@ -2073,6 +2097,9 @@ function handleMetadataMessage(msg) {
     state.resolvedTyBinaryPath = msg.ty_binary_path;
     syncTyBinaryPathNote();
   }
+  if (typeof msg.typeshed_path === "string") {
+    state.typeshedPath = normalizeTypeshedPath(msg.typeshed_path);
+  }
   if (msg.python_tool_repo_paths && typeof msg.python_tool_repo_paths === "object") {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(msg.python_tool_repo_paths);
   }
@@ -2269,6 +2296,7 @@ async function analyze({ onlyTools } = {}) {
     python_version: state.pythonVersion,
     ruff_repo_path: state.ruffRepoPath,
     ty_binary_path: state.tyBinaryPath,
+    typeshed_path: state.typeshedPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
     enabled_tools: toolsToSend,
   };
@@ -2628,6 +2656,18 @@ function bindEvents() {
     updateTyBinaryPathFromInput({ triggerAnalyze: true });
   });
 
+  typeshedPathEl.addEventListener("input", () => {
+    updateTypeshedPathFromInput({ triggerAnalyze: true, writeBack: false });
+  });
+
+  typeshedPathEl.addEventListener("change", () => {
+    updateTypeshedPathFromInput({ triggerAnalyze: true });
+  });
+
+  typeshedPathEl.addEventListener("blur", () => {
+    updateTypeshedPathFromInput({ triggerAnalyze: true });
+  });
+
   mypyRepoPathEl.addEventListener("input", () => {
     updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true, writeBack: false });
   });
@@ -2681,6 +2721,11 @@ function loadFromBootstrap(body) {
   } else {
     state.tyBinaryPath = "";
   }
+  if (typeof body.initial_typeshed_path === "string") {
+    state.typeshedPath = normalizeTypeshedPath(body.initial_typeshed_path);
+  } else {
+    state.typeshedPath = "";
+  }
   if (body.initial_python_tool_repo_paths && typeof body.initial_python_tool_repo_paths === "object") {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(body.initial_python_tool_repo_paths);
   } else {
@@ -2688,6 +2733,7 @@ function loadFromBootstrap(body) {
   }
   ruffRepoPathEl.value = state.ruffRepoPath;
   tyBinaryPathEl.value = state.tyBinaryPath;
+  typeshedPathEl.value = state.typeshedPath;
   mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
   pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
   ensureToolSettings();
@@ -2731,6 +2777,9 @@ function showRestoredOptionsToast() {
   }
   if (state.tyBinaryPath) {
     restored.push("Custom ty binary: " + state.tyBinaryPath);
+  }
+  if (state.typeshedPath) {
+    restored.push("Custom typeshed directory: " + state.typeshedPath);
   }
   if (state.ruffRepoPath) {
     restored.push("Local Ruff clone: " + state.ruffRepoPath);
@@ -2793,6 +2842,7 @@ async function bootstrap() {
     setPythonVersionOptions(DEFAULT_PYTHON_VERSION_OPTIONS);
     state.ruffRepoPath = "";
     state.tyBinaryPath = "";
+    state.typeshedPath = "";
     state.pythonToolRepoPaths = {};
     toolOrder = DEFAULT_TOOL_ORDER.slice();
     state.toolSettings = {};
@@ -2801,6 +2851,7 @@ async function bootstrap() {
     pythonVersionEl.value = state.pythonVersion;
     ruffRepoPathEl.value = "";
     tyBinaryPathEl.value = "";
+    typeshedPathEl.value = "";
     mypyRepoPathEl.value = "";
     pycroscopeRepoPathEl.value = "";
     populateDefaultPyprojectToml();
@@ -2818,6 +2869,8 @@ async function bootstrap() {
     ruffRepoPathEl.value = state.ruffRepoPath;
     state.tyBinaryPath = saved.tyBinaryPath;
     tyBinaryPathEl.value = state.tyBinaryPath;
+    state.typeshedPath = normalizeTypeshedPath(saved.typeshedPath);
+    typeshedPathEl.value = state.typeshedPath;
     if (saved.toolOrder) {
       // Merge saved order with current toolOrder: keep saved order for tools
       // that still exist, append any new tools from the server.
