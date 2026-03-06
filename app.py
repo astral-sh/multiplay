@@ -166,7 +166,6 @@ def _command_env() -> dict[str, str]:
     return env
 
 
-
 def _normalize_enabled_tools(raw: Any) -> list[str]:
     return _normalize_enabled_tools_for_order(raw, TOOL_ORDER)
 
@@ -1201,16 +1200,6 @@ def main() -> None:
         # On Windows, temp directories aren't automatically cleaned up.
         if os.name == "nt":
             shutil.rmtree(PROJECT_DIR, ignore_errors=True)
-        # os._exit() is a thin wrapper around the _exit(2) syscall that
-        # terminates the process immediately, skipping atexit handlers,
-        # finally blocks in other threads, and stdio buffer flushing.
-        # That's exactly what we want here: without it, interpreter
-        # shutdown blocks on concurrent.futures' _python_exit(), which
-        # joins every ThreadPoolExecutor worker thread — including any
-        # still inside subprocess.run() waiting for a child process.
-        # Skipping buffer flushing is fine because the server is
-        # stateless and we already called print() above (which flushes).
-        os._exit(0)
 
 
 if __name__ == "__main__":
