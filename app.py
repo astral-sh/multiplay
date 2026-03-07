@@ -887,6 +887,27 @@ def _fetch_gist(gist_id: str) -> dict[str, Any]:
     return {"files": files}
 
 
+def _github_token() -> str:
+    token = os.environ.get("MULTIPLAY_GH_TOKEN", "").strip()
+    if token:
+        return token
+
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip()
+
+
 def _create_gist(files: list[dict[str, Any]]) -> dict[str, str]:
     gist_files: dict[str, dict[str, str]] = {}
     file_mapping: dict[str, str] = {}  # safe gist name -> original name
@@ -916,31 +937,45 @@ def _create_gist(files: list[dict[str, Any]]) -> dict[str, str]:
         "content": json.dumps({"version": 1, "file_mapping": file_mapping})
     }
 
-    payload = json.dumps({"public": True, "files": gist_files})
+    token = _github_token()
+    if not token:
+        raise RuntimeError(
+            "Missing GitHub token. Set MULTIPLAY_GH_TOKEN or authenticate gh CLI (`gh auth login`)."
+        )
+
+    payload = json.dumps({"public": True, "files": gist_files}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.github.com/gists",
+        data=payload,
+        method="POST",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
 
     try:
-        result = subprocess.run(
-            ["gh", "api", "--method", "POST", "/gists", "--input", "-"],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "gh CLI not found. Install it (https://cli.github.com) and run `gh auth login`."
-        ) from exc
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        message = f"HTTP {exc.code}"
+        try:
+            err_data = json.loads(exc.read().decode("utf-8"))
+            err_msg = str(err_data.get("message", "")).strip()
+            if err_msg:
+                message = f"{message}: {err_msg}"
+        except Exception:
+            pass
+        raise RuntimeError(f"GitHub gist create failed: {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"GitHub gist create failed: {exc.reason}") from exc
 
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        raise RuntimeError(f"gh gist create failed (exit {result.returncode}): {stderr}")
-
-    data = json.loads(result.stdout)
     gist_url = data.get("html_url", "")
     gist_id = data.get("id", "")
     if not gist_id:
-        raise RuntimeError("gh gist create returned no URL")
+        raise RuntimeError("GitHub gist create returned no gist id")
     return {"gist_url": gist_url, "gist_id": gist_id}
 
 
