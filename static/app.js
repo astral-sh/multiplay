@@ -833,16 +833,54 @@ function linkifyLocations(html) {
     "(" + escaped.join("|") + "):(\\d+)(?::(\\d+))?",
     "g",
   );
-  // Split on HTML tags so we only replace within text nodes
-  const parts = html.split(/(<[^>]*>)/);
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i].startsWith("<")) continue;
-    parts[i] = parts[i].replace(pattern, (match, file, line, col) => {
-      const dc = col ? ` data-col="${col}"` : "";
-      return `<a class="loc-link" data-file="${escapeHtml(file)}" data-line="${line}"${dc}>${match}</a>`;
-    });
+  // Build a mapping from text-content index to HTML-source index so that
+  // the regex can match locations even when ANSI-to-HTML conversion has
+  // wrapped parts of the location in <span> tags (e.g. ty concise output).
+  const textToHtml = [];
+  let plainText = "";
+  let pos = 0;
+  for (const tag of html.matchAll(/<[^>]*>/g)) {
+    for (let i = pos; i < tag.index; i++) {
+      textToHtml.push(i);
+      plainText += html[i];
+    }
+    pos = tag.index + tag[0].length;
   }
-  return parts.join("");
+  for (let i = pos; i < html.length; i++) {
+    textToHtml.push(i);
+    plainText += html[i];
+  }
+
+  const matches = [...plainText.matchAll(pattern)];
+  if (matches.length === 0) return html;
+
+  // Insert link tags in reverse order so earlier positions stay valid.
+  let result = html;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i];
+    const textEnd = m.index + m[0].length;
+    let hStart = textToHtml[m.index];
+    let hEnd = textEnd < textToHtml.length ? textToHtml[textEnd] : result.length;
+
+    // Expand to include any <span> tag immediately before hStart and any
+    // </span> tag immediately after hEnd so the <a> wraps complete elements.
+    // Without this the browser's adoption agency algorithm would split a
+    // mis-nested <span><a>…</span> into two separate <a> elements.
+    const pre = result.slice(0, hStart).match(/<span[^>]*>$/);
+    if (pre) hStart -= pre[0].length;
+    const post = result.slice(hEnd).match(/^<\/span>/);
+    if (post) hEnd += post[0].length;
+
+    const dc = m[3] ? ` data-col="${m[3]}"` : "";
+    const open = `<a class="loc-link" data-file="${escapeHtml(m[1])}" data-line="${m[2]}"${dc}>`;
+    result =
+      result.slice(0, hStart) +
+      open +
+      result.slice(hStart, hEnd) +
+      "</a>" +
+      result.slice(hEnd);
+  }
+  return result;
 }
 
 function navigateToLine(line, col) {
@@ -868,14 +906,14 @@ function navigateToLine(line, col) {
   editorEl.scrollTop = Math.max(0, targetScroll);
 
   // Flash the target line
-  const shell = editorEl.closest(".editor-shell");
-  if (shell) {
-    shell.querySelectorAll(".line-glow").forEach((el) => el.remove());
+  const body = editorEl.closest(".editor-body");
+  if (body) {
+    body.querySelectorAll(".line-glow").forEach((el) => el.remove());
     const glow = document.createElement("div");
     glow.className = "line-glow";
     glow.style.top = `${paddingTop + (line - 1) * lineHeight - editorEl.scrollTop}px`;
     glow.style.height = `${lineHeight}px`;
-    shell.appendChild(glow);
+    body.appendChild(glow);
     glow.addEventListener("animationend", () => glow.remove());
   }
 }
