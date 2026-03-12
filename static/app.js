@@ -2438,6 +2438,7 @@ const TOOL_DEFAULT_CONFIG = {
   ty: '[tool.ty.rules]\nundefined-reveal = "ignore"',
   pyright:
     "reportWildcardImportFromLibrary = false\nreportSelfClsParameterName = false\nreportUnusedExpression = false",
+  pyrefly: "[tool.pyrefly.errors]\nunimported-directive = false",
   mypy: "color_output = true\npretty = true\ncheck_untyped_defs = true",
   zuban: "pretty = true\ncheck_untyped_defs = true",
   pycroscope: 'import_paths = ["."]',
