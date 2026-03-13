@@ -79,8 +79,10 @@ To load a shared gist, paste the gist ID (or full URL) into the **Gist ID or URL
 in the header and click **Load**. This replaces the current files and dependencies with
 the contents of the gist.
 
-Sharing requires the [`gh` CLI](https://cli.github.com) installed and authenticated (`gh auth login`).
-Loading gists only requires network access (no `gh` CLI needed).
+Sharing uses the GitHub Gist API directly. It uses `MULTIPLAY_GH_TOKEN` if set
+(for example: `export MULTIPLAY_GH_TOKEN=...`), otherwise it falls back to
+`gh auth token` when the GitHub CLI is installed/authenticated.
+Loading public gists only requires network access.
 
 ## Dependencies
 
@@ -109,5 +111,5 @@ Output panes preserve ANSI terminal color codes when the tool emits them.
 
 - Python 3.14+
 - `uv` available on `PATH`
-- `gh` CLI (optional, for sharing gists — install from https://cli.github.com)
+- GitHub auth for sharing gists: either `MULTIPLAY_GH_TOKEN` or authenticated `gh` CLI
 - Network access on first run so `uv` can fetch tool packages if not already cached
