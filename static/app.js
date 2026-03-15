@@ -188,9 +188,10 @@ function startRuffDirWatcher() {
   if (!ruffPath) return;
 
   async function poll() {
-    // Stop if the path changed or ty_ruff was disabled since we started.
+    // Restart if the path was updated (e.g. server-side normalization resolved
+    // symlinks or expanded "~"), so we keep watching with the canonical path.
     if (state.ruffRepoPath !== ruffPath) {
-      stopRuffDirWatcher();
+      startRuffDirWatcher();
       return;
     }
     const tyRuffSettings = state.toolSettings[RUFF_TY_TOOL];
