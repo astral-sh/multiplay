@@ -11,7 +11,9 @@ function saveState() {
         pythonVersion: state.pythonVersion,
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
+        tySourceMode: state.tySourceMode,
         tyBinaryPath: state.tyBinaryPath,
+        tyPypiVersion: state.tyPypiVersion,
         typeshedPath: state.typeshedPath,
         toolOrder: toolOrder.slice(),
         toolSettings: state.toolSettings,
@@ -53,7 +55,9 @@ function loadSavedState() {
       pythonVersion: typeof data.pythonVersion === "string" ? data.pythonVersion : DEFAULT_PYTHON_VERSION,
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
+      tySourceMode: typeof data.tySourceMode === "string" && ["latest", "pypi", "binary"].includes(data.tySourceMode) ? data.tySourceMode : (typeof data.tyBinaryPath === "string" && data.tyBinaryPath ? "binary" : "latest"),
       tyBinaryPath: typeof data.tyBinaryPath === "string" ? data.tyBinaryPath : "",
+      tyPypiVersion: typeof data.tyPypiVersion === "string" ? data.tyPypiVersion : "",
       typeshedPath: typeof data.typeshedPath === "string" ? data.typeshedPath : "",
       toolOrder: savedToolOrder,
       toolSettings: savedToolSettings,
@@ -105,7 +109,9 @@ const state = {
   pythonVersion: DEFAULT_PYTHON_VERSION,
   pythonVersionOptions: DEFAULT_PYTHON_VERSION_OPTIONS.slice(),
   ruffRepoPath: "",
+  tySourceMode: "latest",
   tyBinaryPath: "",
+  tyPypiVersion: "",
   typeshedPath: "",
   resolvedTyBinaryPath: null,
   pythonToolRepoPaths: {},
@@ -233,8 +239,11 @@ function startRuffDirWatcher() {
 const tabsEl = document.getElementById("tabs");
 const pythonVersionEl = document.getElementById("python-version");
 const ruffRepoPathEl = document.getElementById("ruff-repo-path");
-const tyBinaryPathEl = document.getElementById("ty-binary-path");
-const tyBinaryPathNoteEl = document.getElementById("ty-binary-path-note");
+const tySourceModeEl = document.getElementById("ty-source-mode");
+const tySourceInputRowEl = document.getElementById("ty-source-input-row");
+const tySourceInputLabelEl = document.getElementById("ty-source-input-label");
+const tySourceInputEl = document.getElementById("ty-source-input");
+const tySourceNoteEl = document.getElementById("ty-source-note");
 const typeshedPathEl = document.getElementById("typeshed-path");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
@@ -626,21 +635,46 @@ function showDependencyInstallError(info) {
   depErrorEl.classList.remove("hidden");
 }
 
-const TY_BINARY_PATH_DEFAULT_NOTE = tyBinaryPathNoteEl ? tyBinaryPathNoteEl.innerHTML : "";
+const TY_SOURCE_NOTES = {
+  latest: 'Uses the latest <code>ty</code> from PyPI.',
+  pypi: 'Install a specific version of <code>ty</code> from PyPI (e.g. <code>0.0.22</code>).',
+  binary: 'Use a pre-built <code>ty</code> binary instead of the PyPI version.',
+};
 
-function syncTyBinaryPathNote() {
-  if (!tyBinaryPathNoteEl) return;
-  const raw = state.tyBinaryPath;
-  const resolved = state.resolvedTyBinaryPath;
-  // Show error only when: user typed something, AND the server responded
-  // with empty string (meaning validation failed). null = still waiting.
-  if (raw && resolved !== null && !resolved) {
-    tyBinaryPathNoteEl.textContent = "Path not found or is not a file: " + raw;
-    tyBinaryPathNoteEl.classList.add("deps-note-error");
+function syncTySourceUI() {
+  if (!tySourceModeEl) return;
+  const mode = state.tySourceMode;
+  tySourceModeEl.value = mode;
+
+  // Show/hide the input row
+  if (mode === "latest") {
+    tySourceInputRowEl.style.display = "none";
   } else {
-    tyBinaryPathNoteEl.innerHTML = TY_BINARY_PATH_DEFAULT_NOTE;
-    tyBinaryPathNoteEl.classList.remove("deps-note-error");
+    tySourceInputRowEl.style.display = "";
+    if (mode === "pypi") {
+      tySourceInputLabelEl.textContent = "Version";
+      tySourceInputEl.placeholder = "0.0.22";
+      tySourceInputEl.value = state.tyPypiVersion;
+    } else {
+      tySourceInputLabelEl.textContent = "Path";
+      tySourceInputEl.placeholder = "/path/to/ty";
+      tySourceInputEl.value = state.tyBinaryPath;
+    }
   }
+
+  // Update the note
+  if (!tySourceNoteEl) return;
+  if (mode === "binary") {
+    const raw = state.tyBinaryPath;
+    const resolved = state.resolvedTyBinaryPath;
+    if (raw && resolved !== null && !resolved) {
+      tySourceNoteEl.textContent = "Path not found or is not a file: " + raw;
+      tySourceNoteEl.classList.add("deps-note-error");
+      return;
+    }
+  }
+  tySourceNoteEl.innerHTML = TY_SOURCE_NOTES[mode] || TY_SOURCE_NOTES.latest;
+  tySourceNoteEl.classList.remove("deps-note-error");
 }
 
 function applyAnsiCodes(style, params) {
@@ -1517,6 +1551,10 @@ function normalizeTyBinaryPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
 
+function normalizeTyPypiVersion(raw) {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
 function normalizeTypeshedPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
@@ -1561,8 +1599,11 @@ function toolLabel(tool) {
     const checkoutPath = normalizeRuffRepoPath(state.ruffRepoPath);
     return checkoutPath ? `ty (${checkoutPath})` : "ty (local checkout)";
   }
-  if (tool === "ty" && state.tyBinaryPath) {
+  if (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath) {
     return `ty (${state.tyBinaryPath})`;
+  }
+  if (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion) {
+    return `ty (${state.tyPypiVersion})`;
   }
   const localPythonToolPath = pythonToolRepoPathForTool(tool);
   if (localPythonToolPath) {
@@ -1638,21 +1679,39 @@ function updateRuffRepoPathFromInput({ triggerAnalyze, writeBack = true } = { tr
   }
 }
 
-function updateTyBinaryPathFromInput({ triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
-  const normalized = normalizeTyBinaryPath(tyBinaryPathEl.value);
+function updateTySourceInputFromInput({ triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
+  const mode = state.tySourceMode;
+  const normalized = mode === "pypi"
+    ? normalizeTyPypiVersion(tySourceInputEl.value)
+    : normalizeTyBinaryPath(tySourceInputEl.value);
   if (writeBack) {
-    tyBinaryPathEl.value = normalized;
-  }
-  if (normalized === state.tyBinaryPath) {
-    return;
+    tySourceInputEl.value = normalized;
   }
 
-  state.tyBinaryPath = normalized;
-  state.resolvedTyBinaryPath = null;
-  syncTyBinaryPathNote();
+  if (mode === "pypi") {
+    if (normalized === state.tyPypiVersion) return;
+    state.tyPypiVersion = normalized;
+  } else {
+    if (normalized === state.tyBinaryPath) return;
+    state.tyBinaryPath = normalized;
+    state.resolvedTyBinaryPath = null;
+  }
+
+  syncTySourceUI();
   saveState();
   renderResults(state.lastResults);
 
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updateTySourceMode(newMode, { triggerAnalyze = true } = {}) {
+  if (newMode === state.tySourceMode) return;
+  state.tySourceMode = newMode;
+  syncTySourceUI();
+  saveState();
+  renderResults(state.lastResults);
   if (triggerAnalyze) {
     scheduleAnalyze();
   }
@@ -1949,7 +2008,7 @@ function renderResults(resultByTool) {
     const title = document.createElement("strong");
     const displayName = toolLabel(tool);
     const localPythonToolPath = pythonToolRepoPathForTool(tool);
-    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tyBinaryPath);
+    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath);
     const version = suppressVersion ? "" : state.toolVersions[tool];
     title.textContent =
       typeof version === "string" && version && version !== "unknown"
@@ -2133,7 +2192,7 @@ function handleMetadataMessage(msg) {
   }
   if (typeof msg.ty_binary_path === "string") {
     state.resolvedTyBinaryPath = msg.ty_binary_path;
-    syncTyBinaryPathNote();
+    syncTySourceUI();
   }
   if (typeof msg.typeshed_path === "string") {
     state.typeshedPath = normalizeTypeshedPath(msg.typeshed_path);
@@ -2333,7 +2392,8 @@ async function analyze({ onlyTools } = {}) {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     python_version: state.pythonVersion,
     ruff_repo_path: state.ruffRepoPath,
-    ty_binary_path: state.tyBinaryPath,
+    ty_binary_path: state.tySourceMode === "binary" ? state.tyBinaryPath : "",
+    ty_pypi_version: state.tySourceMode === "pypi" ? state.tyPypiVersion : "",
     typeshed_path: state.typeshedPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
     enabled_tools: toolsToSend,
@@ -2682,16 +2742,20 @@ function bindEvents() {
     updateRuffRepoPathFromInput({ triggerAnalyze: true });
   });
 
-  tyBinaryPathEl.addEventListener("input", () => {
-    updateTyBinaryPathFromInput({ triggerAnalyze: true, writeBack: false });
+  tySourceModeEl.addEventListener("change", () => {
+    updateTySourceMode(tySourceModeEl.value);
   });
 
-  tyBinaryPathEl.addEventListener("change", () => {
-    updateTyBinaryPathFromInput({ triggerAnalyze: true });
+  tySourceInputEl.addEventListener("input", () => {
+    updateTySourceInputFromInput({ triggerAnalyze: true, writeBack: false });
   });
 
-  tyBinaryPathEl.addEventListener("blur", () => {
-    updateTyBinaryPathFromInput({ triggerAnalyze: true });
+  tySourceInputEl.addEventListener("change", () => {
+    updateTySourceInputFromInput({ triggerAnalyze: true });
+  });
+
+  tySourceInputEl.addEventListener("blur", () => {
+    updateTySourceInputFromInput({ triggerAnalyze: true });
   });
 
   typeshedPathEl.addEventListener("input", () => {
@@ -2754,11 +2818,14 @@ function loadFromBootstrap(body) {
   } else {
     state.ruffRepoPath = "";
   }
-  if (typeof body.initial_ty_binary_path === "string") {
+  if (typeof body.initial_ty_binary_path === "string" && body.initial_ty_binary_path) {
+    state.tySourceMode = "binary";
     state.tyBinaryPath = normalizeTyBinaryPath(body.initial_ty_binary_path);
   } else {
+    state.tySourceMode = "latest";
     state.tyBinaryPath = "";
   }
+  state.tyPypiVersion = "";
   if (typeof body.initial_typeshed_path === "string") {
     state.typeshedPath = normalizeTypeshedPath(body.initial_typeshed_path);
   } else {
@@ -2770,7 +2837,7 @@ function loadFromBootstrap(body) {
     state.pythonToolRepoPaths = {};
   }
   ruffRepoPathEl.value = state.ruffRepoPath;
-  tyBinaryPathEl.value = state.tyBinaryPath;
+  syncTySourceUI();
   typeshedPathEl.value = state.typeshedPath;
   mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
   pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
@@ -2813,7 +2880,9 @@ function showRestoredOptionsToast() {
       restored.push("Dependencies (in pyproject.toml): " + depsMatch[1].trim());
     }
   }
-  if (state.tyBinaryPath) {
+  if (state.tySourceMode === "pypi" && state.tyPypiVersion) {
+    restored.push("Custom ty version: " + state.tyPypiVersion);
+  } else if (state.tySourceMode === "binary" && state.tyBinaryPath) {
     restored.push("Custom ty binary: " + state.tyBinaryPath);
   }
   if (state.typeshedPath) {
@@ -2879,7 +2948,9 @@ async function bootstrap() {
     state.pythonVersion = DEFAULT_PYTHON_VERSION;
     setPythonVersionOptions(DEFAULT_PYTHON_VERSION_OPTIONS);
     state.ruffRepoPath = "";
+    state.tySourceMode = "latest";
     state.tyBinaryPath = "";
+    state.tyPypiVersion = "";
     state.typeshedPath = "";
     state.pythonToolRepoPaths = {};
     toolOrder = DEFAULT_TOOL_ORDER.slice();
@@ -2888,7 +2959,7 @@ async function bootstrap() {
     state.lastResults = {};
     pythonVersionEl.value = state.pythonVersion;
     ruffRepoPathEl.value = "";
-    tyBinaryPathEl.value = "";
+    syncTySourceUI();
     typeshedPathEl.value = "";
     mypyRepoPathEl.value = "";
     pycroscopeRepoPathEl.value = "";
@@ -2905,8 +2976,10 @@ async function bootstrap() {
     pythonVersionEl.value = state.pythonVersion;
     state.ruffRepoPath = saved.ruffRepoPath;
     ruffRepoPathEl.value = state.ruffRepoPath;
+    state.tySourceMode = saved.tySourceMode;
     state.tyBinaryPath = saved.tyBinaryPath;
-    tyBinaryPathEl.value = state.tyBinaryPath;
+    state.tyPypiVersion = saved.tyPypiVersion;
+    syncTySourceUI();
     state.typeshedPath = normalizeTypeshedPath(saved.typeshedPath);
     typeshedPathEl.value = state.typeshedPath;
     if (saved.toolOrder) {
