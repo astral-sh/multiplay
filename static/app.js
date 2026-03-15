@@ -1604,7 +1604,7 @@ function toolLabel(tool) {
     return `ty (${state.tyBinaryPath})`;
   }
   if (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion) {
-    return `ty (${state.tyPypiVersion})`;
+    return `ty v${state.tyPypiVersion}`;
   }
   const localPythonToolPath = pythonToolRepoPathForTool(tool);
   if (localPythonToolPath) {
@@ -2009,7 +2009,7 @@ function renderResults(resultByTool) {
     const title = document.createElement("strong");
     const displayName = toolLabel(tool);
     const localPythonToolPath = pythonToolRepoPathForTool(tool);
-    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath);
+    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath) || (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion);
     const version = suppressVersion ? "" : state.toolVersions[tool];
     title.textContent =
       typeof version === "string" && version && version !== "unknown"
