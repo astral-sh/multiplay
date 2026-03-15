@@ -2679,6 +2679,63 @@ function bindEvents() {
       return;
     }
 
+    // Cmd+/ (Mac) or Ctrl+/ (Windows/Linux): toggle line comments
+    if (event.key === "/" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      const val = editorEl.value;
+      const start = editorEl.selectionStart;
+      const end = editorEl.selectionEnd;
+
+      // Find the block of selected lines
+      const blockStart = val.lastIndexOf("\n", start - 1) + 1;
+      const blockEnd = val.indexOf("\n", end - (end > start && val[end - 1] === "\n" ? 1 : 0));
+      const blockEndFinal = blockEnd < 0 ? val.length : blockEnd;
+      const block = val.slice(blockStart, blockEndFinal);
+      const lines = block.split("\n");
+
+      // Determine whether to comment or uncomment:
+      // Uncomment if every non-empty line starts with "# "
+      const nonEmptyLines = lines.filter((l) => l.trim().length > 0);
+      const allCommented =
+        nonEmptyLines.length > 0 &&
+        nonEmptyLines.every((l) => /^(\s*)# /.test(l));
+
+      let deltaFirst = 0;
+      let deltaTotal = 0;
+      let newLines;
+
+      if (allCommented) {
+        // Uncomment: remove the first "# " from each non-empty line
+        newLines = lines.map((line, i) => {
+          if (line.trim().length === 0) return line;
+          const newLine = line.replace(/^(\s*)# /, "$1");
+          const removed = line.length - newLine.length;
+          if (i === 0) deltaFirst = -removed;
+          deltaTotal -= removed;
+          return newLine;
+        });
+      } else {
+        // Comment: add "# " after leading whitespace on each non-empty line
+        newLines = lines.map((line, i) => {
+          if (line.trim().length === 0) return line;
+          const newLine = line.replace(/^(\s*)/, "$1# ");
+          const added = newLine.length - line.length;
+          if (i === 0) deltaFirst = added;
+          deltaTotal += added;
+          return newLine;
+        });
+      }
+
+      const newBlock = newLines.join("\n");
+      editorEl.setSelectionRange(blockStart, blockEndFinal);
+      document.execCommand("insertText", false, newBlock);
+
+      const newStart = Math.max(blockStart, start + deltaFirst);
+      const newEnd = Math.max(newStart, end + deltaTotal);
+      editorEl.setSelectionRange(newStart, newEnd);
+      return;
+    }
+
     // Enter: autoindent
     if (event.key === "Enter") {
       const val = editorEl.value;
