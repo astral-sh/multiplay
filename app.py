@@ -1075,6 +1075,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._handle_share()
             return
 
+        if path == "/api/format":
+            self._handle_format()
+            return
+
         if path != "/api/analyze":
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -1177,6 +1181,78 @@ class AppHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON payload"})
         except RuntimeError as exc:
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+        except Exception as exc:  # pragma: no cover
+            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Unexpected error: {exc}"})
+
+    def _handle_format(self) -> None:
+        try:
+            body = self._read_json_body()
+            files = body.get("files")
+            if not isinstance(files, list) or not files:
+                raise ValueError("Expected non-empty 'files' list")
+
+            with tempfile.TemporaryDirectory(prefix="ruff-format-") as tmp:
+                tmp_path = Path(tmp)
+                py_names: list[str] = []
+                for entry in files:
+                    name = str(entry.get("name", ""))
+                    content = entry.get("content", "")
+                    if not name or not isinstance(content, str):
+                        continue
+                    rel = _safe_relative_path(name)
+                    file_path = tmp_path / rel
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(content, encoding="utf-8")
+                    if name.endswith((".py", ".pyi")):
+                        py_names.append(name)
+
+                if not py_names:
+                    _json_response(self, HTTPStatus.OK, {"files": {}, "duration_ms": 0})
+                    return
+
+                env = _command_env()
+                started = time.perf_counter()
+                try:
+                    completed = subprocess.run(
+                        ["uvx", "ruff", "format", tmp],
+                        cwd=tmp_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        env=env,
+                        check=False,
+                    )
+                except FileNotFoundError as exc:
+                    _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Command not found: {exc}"})
+                    return
+                except subprocess.TimeoutExpired:
+                    _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "ruff format timed out"})
+                    return
+
+                duration_ms = int((time.perf_counter() - started) * 1000)
+
+                if completed.returncode != 0:
+                    stderr = completed.stderr or ""
+                    _json_response(self, HTTPStatus.BAD_REQUEST, {
+                        "error": "ruff format failed",
+                        "output": stderr,
+                        "returncode": completed.returncode,
+                        "duration_ms": duration_ms,
+                    })
+                    return
+
+                formatted_files: dict[str, str] = {}
+                for name in py_names:
+                    rel = _safe_relative_path(name)
+                    formatted_files[name] = (tmp_path / rel).read_text(encoding="utf-8")
+                _json_response(self, HTTPStatus.OK, {
+                    "files": formatted_files,
+                    "duration_ms": duration_ms,
+                })
+        except ValueError as exc:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except json.JSONDecodeError:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON payload"})
         except Exception as exc:  # pragma: no cover
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Unexpected error: {exc}"})
 

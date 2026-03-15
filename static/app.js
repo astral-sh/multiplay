@@ -298,6 +298,11 @@ if (themeToggleEl) {
 }
 initTheme();
 
+const formatBtnEl = document.getElementById("format-btn");
+if (formatBtnEl) {
+  formatBtnEl.addEventListener("click", handleFormat);
+}
+
 const resetBtnEl = document.getElementById("reset-btn");
 if (resetBtnEl) {
   resetBtnEl.addEventListener("click", handleReset);
@@ -320,6 +325,55 @@ if (gistInputEl) {
       handleLoadGist();
     }
   });
+}
+
+async function handleFormat() {
+  const pyFiles = state.files.filter((f) => {
+    const ext = extensionOf(f.name);
+    return ext === ".py" || ext === ".pyi";
+  });
+  if (pyFiles.length === 0) {
+    setStatus("No Python files to format");
+    return;
+  }
+
+  formatBtnEl.disabled = true;
+  formatBtnEl.textContent = "Formatting...";
+  try {
+    const resp = await fetch("/api/format", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: state.files.map((f) => ({ name: f.name, content: f.content })),
+      }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Format failed: " + (body.error || resp.status));
+      return;
+    }
+    const formattedFiles = body.files || {};
+    let changed = 0;
+    for (const file of state.files) {
+      const formatted = formattedFiles[file.name];
+      if (typeof formatted === "string" && formatted !== file.content) {
+        file.content = formatted;
+        changed++;
+      }
+    }
+    if (changed > 0) {
+      syncEditorFromState();
+      scheduleAnalyze();
+      setStatus("Formatted " + changed + " file(s) in " + body.duration_ms + "ms");
+    } else {
+      setStatus("Already formatted");
+    }
+  } catch (err) {
+    setStatus("Format error: " + err.message);
+  } finally {
+    formatBtnEl.disabled = false;
+    formatBtnEl.textContent = "Format code";
+  }
 }
 
 function handleReset() {
@@ -2628,6 +2682,13 @@ function bindEvents() {
   });
 
   editorEl.addEventListener("keydown", (event) => {
+    // Shift+Alt+F: format with Ruff
+    if (event.key === "F" && event.shiftKey && event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      handleFormat();
+      return;
+    }
+
     if (!isPythonFile()) return;
 
     // Tab / Shift+Tab: indent or dedent selected lines
