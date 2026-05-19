@@ -95,7 +95,9 @@ If dependency install fails, the UI shows a dedicated error panel with command,
 exit code, requested dependencies, and full installer output.
 
 Dependency installs use a 2-day package cooldown, so newly uploaded package
-versions are ignored until they have been available for at least two days.
+versions are ignored until they have been available for at least two days. The
+advanced options include a package exemption list for dependencies that should
+skip the cooldown; it defaults to `ty`.
 
 ## Configuration
 

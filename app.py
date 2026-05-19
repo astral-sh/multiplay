@@ -78,6 +78,8 @@ TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 10
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
 DEPENDENCY_COOLDOWN = "2 days"
+DEPENDENCY_COOLDOWN_EXEMPTION = "0 seconds"
+DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES = ["ty"]
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -381,14 +383,52 @@ def _venv_python_path(project_dir: Path) -> Path | None:
     return None
 
 
-def _uv_sync_command() -> list[str]:
-    return ["uv", "sync", "--exclude-newer", DEPENDENCY_COOLDOWN]
+def _canonical_package_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _run_uv_sync(project_dir: Path, timeout_seconds: int = 300) -> dict[str, Any]:
+def _normalize_dependency_cooldown_exempt_packages(raw: Any) -> list[str]:
+    if raw is None:
+        return list(DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES)
+    if not isinstance(raw, list):
+        raise ValueError("dependency_cooldown_exempt_packages must be a list of package names")
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("dependency_cooldown_exempt_packages must contain only strings")
+        name = item.strip()
+        if not name:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name):
+            raise ValueError(f"Invalid dependency cooldown exempt package name: {name!r}")
+        canonical = _canonical_package_name(name)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        normalized.append(canonical)
+    return normalized
+
+
+def _uv_sync_command(dependency_cooldown_exempt_packages: list[str] | None = None) -> list[str]:
+    command = ["uv", "sync", "--exclude-newer", DEPENDENCY_COOLDOWN]
+    packages = dependency_cooldown_exempt_packages
+    if packages is None:
+        packages = DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES
+    for package in packages:
+        command.extend(["--exclude-newer-package", f"{package}={DEPENDENCY_COOLDOWN_EXEMPTION}"])
+    return command
+
+
+def _run_uv_sync(
+    project_dir: Path,
+    timeout_seconds: int = 300,
+    dependency_cooldown_exempt_packages: list[str] | None = None,
+) -> dict[str, Any]:
     env = _command_env()
     started = time.perf_counter()
-    command = _uv_sync_command()
+    command = _uv_sync_command(dependency_cooldown_exempt_packages)
     try:
         completed = subprocess.run(
             command,
@@ -1032,6 +1072,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "initial_ty_binary_path": "",
                     "initial_typeshed_path": "",
                     "initial_python_tool_repo_paths": {},
+                    "initial_dependency_cooldown_exempt_packages": list(DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES),
                     "tool_versions": dict(TOOL_VERSIONS),
                     "temp_dir": str(PROJECT_DIR),
                 },
@@ -1099,13 +1140,19 @@ class AppHandler(BaseHTTPRequestHandler):
             ty_pypi_version = _normalize_ty_pypi_version(body.get("ty_pypi_version"))
             typeshed_path = _normalize_typeshed_path(body.get("typeshed_path"))
             python_tool_repo_paths = _normalize_python_tool_repo_paths(body.get("python_tool_repo_paths"))
+            dependency_cooldown_exempt_packages = _normalize_dependency_cooldown_exempt_packages(
+                body.get("dependency_cooldown_exempt_packages")
+            )
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
 
             with STATE_LOCK:
                 _write_files_to_project(PROJECT_DIR, files)
 
-                sync_result = _run_uv_sync(PROJECT_DIR)
+                sync_result = _run_uv_sync(
+                    PROJECT_DIR,
+                    dependency_cooldown_exempt_packages=dependency_cooldown_exempt_packages,
+                )
                 if sync_result["returncode"] != 0:
                     _json_response(
                         self,
@@ -1122,6 +1169,7 @@ class AppHandler(BaseHTTPRequestHandler):
                             "ty_pypi_version": ty_pypi_version or "",
                             "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
                             "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
+                            "dependency_cooldown_exempt_packages": dependency_cooldown_exempt_packages,
                             "tool_versions": dict(TOOL_VERSIONS),
                             "temp_dir": str(PROJECT_DIR),
                         },
@@ -1145,6 +1193,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "ty_pypi_version": ty_pypi_version or "",
                     "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
                     "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
+                    "dependency_cooldown_exempt_packages": dependency_cooldown_exempt_packages,
                     "temp_dir": str(PROJECT_DIR),
                 })
 
