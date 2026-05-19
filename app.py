@@ -40,7 +40,7 @@ DEFAULT_FILES = [
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
     {"name": "pyproject.toml", "content": '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n'},
 ]
-SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
 DEFAULT_PYTHON_VERSION = "3.14"
 
 
