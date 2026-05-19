@@ -94,6 +94,9 @@ imports from installed packages directly.
 If dependency install fails, the UI shows a dedicated error panel with command,
 exit code, requested dependencies, and full installer output.
 
+Dependency installs use a 2-day package cooldown, so newly uploaded package
+versions are ignored until they have been available for at least two days.
+
 ## Configuration
 
 Because we are simply running the type checker CLIs, you can add `ty.toml`,
