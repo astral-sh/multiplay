@@ -1712,6 +1712,29 @@ function toolLabel(tool) {
   return tool;
 }
 
+function resultTitleText(tool) {
+  const displayName = toolLabel(tool);
+  const localPythonToolPath = pythonToolRepoPathForTool(tool);
+  const suppressVersion =
+    localPythonToolPath ||
+    (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath) ||
+    (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion);
+  const version = suppressVersion ? "" : state.toolVersions[tool];
+  return typeof version === "string" && version && version !== "unknown"
+    ? `${displayName} v${version}`
+    : displayName;
+}
+
+function refreshResultTitles() {
+  resultsEl.querySelectorAll(".result-card").forEach((card) => {
+    const tool = card.dataset.tool;
+    const title = card.querySelector(".result-title");
+    if (tool && title) {
+      title.textContent = resultTitleText(tool);
+    }
+  });
+}
+
 function syncRuffToolPresence() {
   const hasRuffPath = state.ruffRepoPath.length > 0;
   const hasRuffTool = toolOrder.includes(RUFF_TY_TOOL);
@@ -2122,14 +2145,9 @@ function renderResults(resultByTool) {
     titleWrap.className = "result-title-wrap";
 
     const title = document.createElement("strong");
+    title.className = "result-title";
     const displayName = toolLabel(tool);
-    const localPythonToolPath = pythonToolRepoPathForTool(tool);
-    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath) || (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion);
-    const version = suppressVersion ? "" : state.toolVersions[tool];
-    title.textContent =
-      typeof version === "string" && version && version !== "unknown"
-        ? `${displayName} v${version}`
-        : `${displayName}`;
+    title.textContent = resultTitleText(tool);
     titleWrap.appendChild(title);
 
     const right = document.createElement("div");
@@ -2336,6 +2354,8 @@ function handleMetadataMessage(msg) {
   if (typeof msg.temp_dir === "string" && msg.temp_dir) {
     setTempDir("Temp directory: " + msg.temp_dir);
   }
+
+  refreshResultTitles();
 
   if (state.currentOnlyTools) {
     // Partial run: only clear results for the tools being re-analyzed.
@@ -3223,6 +3243,7 @@ async function bootstrap() {
   bindEvents();
   renderTabs();
   syncEditorFromState();
+  renderResults(state.lastResults);
   startRuffDirWatcher();
   analyze();
 }
