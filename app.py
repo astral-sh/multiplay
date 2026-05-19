@@ -38,7 +38,13 @@ DEFAULT_FILES = [
         ),
     },
     {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
-    {"name": "pyproject.toml", "content": '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n'},
+    {
+        "name": "pyproject.toml",
+        "content": (
+            '[project]\nname = "sandbox"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.10"\ndependencies = []\n\n[tool.pyrefly]\n'
+        ),
+    },
 ]
 SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 DEFAULT_PYTHON_VERSION = "3.14"
@@ -820,7 +826,8 @@ def _prime_tool_installs() -> dict[str, dict[str, Any]]:
     pyproject_path = PROJECT_DIR / "pyproject.toml"
     if not pyproject_path.exists():
         pyproject_path.write_text(
-            '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []\n',
+            '[project]\nname = "sandbox"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.10"\ndependencies = []\n\n[tool.pyrefly]\n',
             encoding="utf-8",
         )
     _run_uv_sync(PROJECT_DIR)
