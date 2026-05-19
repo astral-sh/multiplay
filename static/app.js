@@ -376,15 +376,19 @@ async function handleFormat() {
   }
 }
 
-function handleReset() {
-  state.files = [
-    { name: "main.py", content: "" },
-    { name: "pyproject.toml", content: buildPyprojectContent() },
-  ];
-  state.activeIndex = 0;
-  renderTabs();
-  syncEditorFromState();
-  scheduleAnalyze();
+async function handleReset() {
+  resetBtnEl.disabled = true;
+  try {
+    const body = await fetchBootstrap();
+    loadFromBootstrap(body);
+    renderTabs();
+    syncEditorFromState();
+    scheduleAnalyze();
+  } catch (err) {
+    setStatus("Reset failed: " + err.message);
+  } finally {
+    resetBtnEl.disabled = false;
+  }
 }
 
 async function handleShare() {
@@ -2990,6 +2994,15 @@ function loadFromBootstrap(body) {
   populateDefaultPyprojectToml();
 }
 
+async function fetchBootstrap() {
+  const resp = await fetch("/api/bootstrap");
+  const body = await resp.json();
+  if (!resp.ok) {
+    throw new Error(body.error || "bootstrap failed");
+  }
+  return body;
+}
+
 function showRestoredOptionsToast() {
   const restored = [];
   // Check if pyproject.toml has non-empty dependencies
@@ -3057,12 +3070,7 @@ async function bootstrap() {
   renderResults({});
 
   try {
-    const resp = await fetch("/api/bootstrap");
-    const body = await resp.json();
-    if (!resp.ok) {
-      throw new Error(body.error || "bootstrap failed");
-    }
-    loadFromBootstrap(body);
+    loadFromBootstrap(await fetchBootstrap());
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
     state.pythonVersion = DEFAULT_PYTHON_VERSION;
