@@ -87,12 +87,17 @@ Loading public gists only requires network access.
 ## Dependencies
 
 The header has a dependency field (comma/newline separated). When non-empty,
-dependencies are installed into the venv with `uv pip install` alongside the
-type checker tools. All tools run from the same venv, so they can resolve
-imports from installed packages directly.
+dependencies are added to `pyproject.toml` and installed into the venv with
+`uv sync` alongside the type checker tools. All tools run from the same venv,
+so they can resolve imports from installed packages directly.
 
 If dependency install fails, the UI shows a dedicated error panel with command,
 exit code, requested dependencies, and full installer output.
+
+Dependency installs use a 2-day package cooldown, so newly uploaded package
+versions are ignored until they have been available for at least two days. The
+advanced options include a package exemption list for dependencies that should
+skip the cooldown; it defaults to `ty`.
 
 ## Configuration
 

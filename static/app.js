@@ -1,6 +1,7 @@
 const STORAGE_KEY = "multiplay_state";
 const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15", ""];
 const DEFAULT_PYTHON_VERSION = "3.14";
+const DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES = ["ty"];
 
 function saveState() {
   try {
@@ -15,6 +16,7 @@ function saveState() {
         tyBinaryPath: state.tyBinaryPath,
         tyPypiVersion: state.tyPypiVersion,
         typeshedPath: state.typeshedPath,
+        dependencyCooldownExemptPackages: state.dependencyCooldownExemptPackages,
         toolOrder: toolOrder.slice(),
         toolSettings: state.toolSettings,
       }),
@@ -59,6 +61,7 @@ function loadSavedState() {
       tyBinaryPath: typeof data.tyBinaryPath === "string" ? data.tyBinaryPath : "",
       tyPypiVersion: typeof data.tyPypiVersion === "string" ? data.tyPypiVersion : "",
       typeshedPath: typeof data.typeshedPath === "string" ? data.typeshedPath : "",
+      dependencyCooldownExemptPackages: normalizeDependencyCooldownExemptPackages(data.dependencyCooldownExemptPackages),
       toolOrder: savedToolOrder,
       toolSettings: savedToolSettings,
     };
@@ -113,6 +116,7 @@ const state = {
   tyBinaryPath: "",
   tyPypiVersion: "",
   typeshedPath: "",
+  dependencyCooldownExemptPackages: DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES.slice(),
   resolvedTyBinaryPath: null,
   pythonToolRepoPaths: {},
   activeIndex: 0,
@@ -246,6 +250,7 @@ const tySourceInputLabelEl = document.getElementById("ty-source-input-label");
 const tySourceInputEl = document.getElementById("ty-source-input");
 const tySourceNoteEl = document.getElementById("ty-source-note");
 const typeshedPathEl = document.getElementById("typeshed-path");
+const dependencyCooldownExemptPackagesEl = document.getElementById("dependency-cooldown-exempt-packages");
 const mypyRepoPathEl = document.getElementById("mypy-repo-path");
 const pycroscopeRepoPathEl = document.getElementById("pycroscope-repo-path");
 const lineNumbersEl = document.getElementById("line-numbers");
@@ -1622,6 +1627,42 @@ function normalizePythonToolRepoPath(raw) {
   return typeof raw === "string" ? raw.trim() : "";
 }
 
+function canonicalPackageName(name) {
+  return name.toLowerCase().replace(/[-_.]+/g, "-");
+}
+
+function normalizeDependencyCooldownExemptPackages(raw) {
+  const items = Array.isArray(raw) ? raw : DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES;
+  const seen = new Set();
+  const normalized = [];
+  for (const item of items) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const name = item.trim();
+    if (!name || !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(name)) {
+      continue;
+    }
+    const canonical = canonicalPackageName(name);
+    if (seen.has(canonical)) {
+      continue;
+    }
+    seen.add(canonical);
+    normalized.push(canonical);
+  }
+  return normalized;
+}
+
+function parseDependencyCooldownExemptPackages(raw) {
+  return normalizeDependencyCooldownExemptPackages(
+    typeof raw === "string" ? raw.split(/[,\n]+/) : raw,
+  );
+}
+
+function dependencyCooldownExemptPackagesText(packages = state.dependencyCooldownExemptPackages) {
+  return normalizeDependencyCooldownExemptPackages(packages).join(", ");
+}
+
 function normalizePythonToolRepoPaths(raw) {
   const normalized = {};
   if (!raw || typeof raw !== "object") {
@@ -1653,6 +1694,10 @@ function pythonToolRepoPathsPayload() {
   return payload;
 }
 
+function syncDependencyCooldownExemptPackagesInput() {
+  dependencyCooldownExemptPackagesEl.value = dependencyCooldownExemptPackagesText();
+}
+
 function toolLabel(tool) {
   if (tool === RUFF_TY_TOOL) {
     const checkoutPath = normalizeRuffRepoPath(state.ruffRepoPath);
@@ -1669,6 +1714,29 @@ function toolLabel(tool) {
     return `${tool} (${localPythonToolPath})`;
   }
   return tool;
+}
+
+function resultTitleText(tool) {
+  const displayName = toolLabel(tool);
+  const localPythonToolPath = pythonToolRepoPathForTool(tool);
+  const suppressVersion =
+    localPythonToolPath ||
+    (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath) ||
+    (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion);
+  const version = suppressVersion ? "" : state.toolVersions[tool];
+  return typeof version === "string" && version && version !== "unknown"
+    ? `${displayName} v${version}`
+    : displayName;
+}
+
+function refreshResultTitles() {
+  resultsEl.querySelectorAll(".result-card").forEach((card) => {
+    const tool = card.dataset.tool;
+    const title = card.querySelector(".result-title");
+    if (tool && title) {
+      title.textContent = resultTitleText(tool);
+    }
+  });
 }
 
 function syncRuffToolPresence() {
@@ -1786,6 +1854,22 @@ function updateTypeshedPathFromInput({ triggerAnalyze, writeBack = true } = { tr
   }
 
   state.typeshedPath = normalized;
+
+  if (triggerAnalyze) {
+    scheduleAnalyze();
+  }
+}
+
+function updateDependencyCooldownExemptPackagesFromInput({ triggerAnalyze, writeBack = true } = { triggerAnalyze: false }) {
+  const normalized = parseDependencyCooldownExemptPackages(dependencyCooldownExemptPackagesEl.value);
+  if (writeBack) {
+    dependencyCooldownExemptPackagesEl.value = dependencyCooldownExemptPackagesText(normalized);
+  }
+  if (normalized.join("\n") === state.dependencyCooldownExemptPackages.join("\n")) {
+    return;
+  }
+
+  state.dependencyCooldownExemptPackages = normalized;
 
   if (triggerAnalyze) {
     scheduleAnalyze();
@@ -2065,14 +2149,9 @@ function renderResults(resultByTool) {
     titleWrap.className = "result-title-wrap";
 
     const title = document.createElement("strong");
+    title.className = "result-title";
     const displayName = toolLabel(tool);
-    const localPythonToolPath = pythonToolRepoPathForTool(tool);
-    const suppressVersion = localPythonToolPath || (tool === "ty" && state.tySourceMode === "binary" && state.tyBinaryPath) || (tool === "ty" && state.tySourceMode === "pypi" && state.tyPypiVersion);
-    const version = suppressVersion ? "" : state.toolVersions[tool];
-    title.textContent =
-      typeof version === "string" && version && version !== "unknown"
-        ? `${displayName} v${version}`
-        : `${displayName}`;
+    title.textContent = resultTitleText(tool);
     titleWrap.appendChild(title);
 
     const right = document.createElement("div");
@@ -2259,6 +2338,10 @@ function handleMetadataMessage(msg) {
   if (msg.python_tool_repo_paths && typeof msg.python_tool_repo_paths === "object") {
     state.pythonToolRepoPaths = normalizePythonToolRepoPaths(msg.python_tool_repo_paths);
   }
+  if (Array.isArray(msg.dependency_cooldown_exempt_packages)) {
+    state.dependencyCooldownExemptPackages = normalizeDependencyCooldownExemptPackages(msg.dependency_cooldown_exempt_packages);
+    syncDependencyCooldownExemptPackagesInput();
+  }
   ensureToolSettings();
   // For partial runs (e.g. toggling a single tool on), the server only knows
   // about the subset we sent — don't let its enabled_tools list overwrite the
@@ -2275,6 +2358,8 @@ function handleMetadataMessage(msg) {
   if (typeof msg.temp_dir === "string" && msg.temp_dir) {
     setTempDir("Temp directory: " + msg.temp_dir);
   }
+
+  refreshResultTitles();
 
   if (state.currentOnlyTools) {
     // Partial run: only clear results for the tools being re-analyzed.
@@ -2455,6 +2540,7 @@ async function analyze({ onlyTools } = {}) {
     ty_pypi_version: state.tySourceMode === "pypi" ? state.tyPypiVersion : "",
     typeshed_path: state.typeshedPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
+    dependency_cooldown_exempt_packages: state.dependencyCooldownExemptPackages,
     enabled_tools: toolsToSend,
   };
 
@@ -2894,6 +2980,18 @@ function bindEvents() {
     updateTypeshedPathFromInput({ triggerAnalyze: true });
   });
 
+  dependencyCooldownExemptPackagesEl.addEventListener("input", () => {
+    updateDependencyCooldownExemptPackagesFromInput({ triggerAnalyze: true, writeBack: false });
+  });
+
+  dependencyCooldownExemptPackagesEl.addEventListener("change", () => {
+    updateDependencyCooldownExemptPackagesFromInput({ triggerAnalyze: true });
+  });
+
+  dependencyCooldownExemptPackagesEl.addEventListener("blur", () => {
+    updateDependencyCooldownExemptPackagesFromInput({ triggerAnalyze: true });
+  });
+
   mypyRepoPathEl.addEventListener("input", () => {
     updatePythonToolRepoPathFromInput("mypy", mypyRepoPathEl, { triggerAnalyze: true, writeBack: false });
   });
@@ -2960,9 +3058,15 @@ function loadFromBootstrap(body) {
   } else {
     state.pythonToolRepoPaths = {};
   }
+  if (Array.isArray(body.initial_dependency_cooldown_exempt_packages)) {
+    state.dependencyCooldownExemptPackages = normalizeDependencyCooldownExemptPackages(body.initial_dependency_cooldown_exempt_packages);
+  } else {
+    state.dependencyCooldownExemptPackages = DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES.slice();
+  }
   ruffRepoPathEl.value = state.ruffRepoPath;
   syncTySourceUI();
   typeshedPathEl.value = state.typeshedPath;
+  syncDependencyCooldownExemptPackagesInput();
   mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
   pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
   ensureToolSettings();
@@ -3024,6 +3128,11 @@ function showRestoredOptionsToast() {
   if (state.ruffRepoPath) {
     restored.push("Local Ruff clone: " + state.ruffRepoPath);
   }
+  const cooldownExemptText = dependencyCooldownExemptPackagesText();
+  const defaultCooldownExemptText = dependencyCooldownExemptPackagesText(DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES);
+  if (cooldownExemptText && cooldownExemptText !== defaultCooldownExemptText) {
+    restored.push("Dependency cooldown exemptions: " + cooldownExemptText);
+  }
   PYTHON_LOCAL_TOOLS.forEach((tool) => {
     const path = pythonToolRepoPathForTool(tool);
     if (path) {
@@ -3080,6 +3189,7 @@ async function bootstrap() {
     state.tyBinaryPath = "";
     state.tyPypiVersion = "";
     state.typeshedPath = "";
+    state.dependencyCooldownExemptPackages = DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES.slice();
     state.pythonToolRepoPaths = {};
     toolOrder = DEFAULT_TOOL_ORDER.slice();
     state.toolSettings = {};
@@ -3089,6 +3199,7 @@ async function bootstrap() {
     ruffRepoPathEl.value = "";
     syncTySourceUI();
     typeshedPathEl.value = "";
+    syncDependencyCooldownExemptPackagesInput();
     mypyRepoPathEl.value = "";
     pycroscopeRepoPathEl.value = "";
     populateDefaultPyprojectToml();
@@ -3110,6 +3221,8 @@ async function bootstrap() {
     syncTySourceUI();
     state.typeshedPath = normalizeTypeshedPath(saved.typeshedPath);
     typeshedPathEl.value = state.typeshedPath;
+    state.dependencyCooldownExemptPackages = normalizeDependencyCooldownExemptPackages(saved.dependencyCooldownExemptPackages);
+    syncDependencyCooldownExemptPackagesInput();
     if (saved.toolOrder) {
       // Merge saved order with current toolOrder: keep saved order for tools
       // that still exist, append any new tools from the server.
@@ -3138,6 +3251,7 @@ async function bootstrap() {
   bindEvents();
   renderTabs();
   syncEditorFromState();
+  renderResults(state.lastResults);
   startRuffDirWatcher();
   analyze();
 }

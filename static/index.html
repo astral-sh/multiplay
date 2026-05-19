@@ -93,6 +93,17 @@
             />
           </div>
           <p class="status deps-note">Runs <code>uv run --with-editable 'pycroscope @ &lt;dir&gt;' pycroscope ...</code> for the pycroscope checker.</p>
+          <label class="advanced-section-label" for="dependency-cooldown-exempt-packages">Dependency install options</label>
+          <div class="deps-row">
+            <label class="deps-label" for="dependency-cooldown-exempt-packages">No cooldown</label>
+            <textarea
+              id="dependency-cooldown-exempt-packages"
+              class="deps-input deps-textarea"
+              rows="2"
+              spellcheck="false"
+            >ty</textarea>
+          </div>
+          <p class="status deps-note">Comma- or newline-separated packages that bypass the 2-day dependency cooldown.</p>
         </div>
       </details>
         <label class="python-version-group" for="python-version">
