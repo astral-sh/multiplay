@@ -20,7 +20,6 @@ import webbrowser
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -78,7 +77,7 @@ PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 10
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
-DEPENDENCY_COOLDOWN = timedelta(days=2)
+DEPENDENCY_COOLDOWN = "2 days"
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -382,20 +381,8 @@ def _venv_python_path(project_dir: Path) -> Path | None:
     return None
 
 
-def _dependency_exclude_newer_cutoff(now: datetime | None = None) -> str:
-    if now is None:
-        now = datetime.now(UTC)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=UTC)
-    else:
-        now = now.astimezone(UTC)
-
-    cutoff = now - DEPENDENCY_COOLDOWN
-    return cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
 def _uv_sync_command() -> list[str]:
-    return ["uv", "sync", "--exclude-newer", _dependency_exclude_newer_cutoff()]
+    return ["uv", "sync", "--exclude-newer", DEPENDENCY_COOLDOWN]
 
 
 def _run_uv_sync(project_dir: Path, timeout_seconds: int = 300) -> dict[str, Any]:
