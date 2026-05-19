@@ -26,25 +26,47 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+DEFAULT_PYPROJECT_TOML = """[project]
+name = "sandbox"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+
+[tool.ty]
+[tool.ty.rules]
+undefined-reveal = "ignore"
+
+
+[tool.pyright]
+reportWildcardImportFromLibrary = false
+reportSelfClsParameterName = false
+reportUnusedExpression = false
+
+
+[tool.pyrefly]
+[tool.pyrefly.errors]
+unimported-directive = false
+
+
+[tool.mypy]
+color_output = true
+pretty = true
+check_untyped_defs = true
+
+
+[tool.zuban]
+pretty = true
+check_untyped_defs = true
+
+
+[tool.pycroscope]
+import_paths = ["."]
+"""
+
 DEFAULT_FILES = [
-    {
-        "name": "main.py",
-        "content": (
-            "from helpers import greet\n\n"
-            "def run() -> None:\n"
-            "    print(greet('world'))\n\n"
-            "if __name__ == '__main__':\n"
-            "    run()\n"
-        ),
-    },
-    {"name": "helpers.py", "content": "def greet(name: str) -> str:\n    return f'hello, {name}'\n"},
-    {
-        "name": "pyproject.toml",
-        "content": (
-            '[project]\nname = "sandbox"\nversion = "0.1.0"\n'
-            'requires-python = ">=3.10"\ndependencies = []\n\n[tool.pyrefly]\n'
-        ),
-    },
+    {"name": "main.py", "content": ""},
+    {"name": "pyproject.toml", "content": DEFAULT_PYPROJECT_TOML},
 ]
 SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 DEFAULT_PYTHON_VERSION = "3.14"
@@ -825,11 +847,7 @@ def _prime_tool_installs() -> dict[str, dict[str, Any]]:
     """Write a default pyproject.toml and run uv sync, then detect versions."""
     pyproject_path = PROJECT_DIR / "pyproject.toml"
     if not pyproject_path.exists():
-        pyproject_path.write_text(
-            '[project]\nname = "sandbox"\nversion = "0.1.0"\n'
-            'requires-python = ">=3.10"\ndependencies = []\n\n[tool.pyrefly]\n',
-            encoding="utf-8",
-        )
+        pyproject_path.write_text(DEFAULT_PYPROJECT_TOML, encoding="utf-8")
     _run_uv_sync(PROJECT_DIR)
     return _detect_tool_versions(PROJECT_DIR)
 
