@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -79,6 +80,15 @@ class ToolSpec:
     version_command: list[str]
 
 
+@dataclass(frozen=True)
+class ProcessResult:
+    stdout: str
+    stderr: str
+    returncode: int
+    timed_out: bool = False
+    cancelled: bool = False
+
+
 TOOL_SPECS = [
     ToolSpec("ty", ["ty", "check"], ["ty", "--version"]),
     ToolSpec("pyright", ["pyright", "--outputjson"], ["pyright", "--version"]),
@@ -101,7 +111,13 @@ APP_ROOT = Path(__file__).resolve().parent
 STATIC_DIR = APP_ROOT / "static"
 SERVER_ID = uuid.uuid4().hex
 STATE_LOCK = threading.Lock()
-PROJECT_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
+ACTIVE_ANALYSES_LOCK = threading.Lock()
+ACTIVE_ANALYSES: dict[str, tuple[int, threading.Event]] = {}
+# Keep completed generations so delayed older requests cannot restart work.
+LATEST_ANALYSIS_REQUESTS: dict[str, tuple[int, float]] = {}
+ANALYSIS_REQUEST_HISTORY_TTL_SECONDS = 60 * 60
+ANALYSIS_REQUEST_HISTORY_MAX_CLIENTS = 1024
+STAGING_DIR = Path(tempfile.mkdtemp(prefix="multifile-editor-"))
 TOOL_VERSIONS: dict[str, str] = {spec.name: "unknown" for spec in TOOL_SPECS}
 ANALYZE_TOOL_TIMEOUT_SECONDS = 10
 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS: int | None = None
@@ -186,6 +202,18 @@ def _write_files_to_project(project_dir: Path, files: list[dict[str, Any]]) -> N
         destination.write_text(content, encoding="utf-8")
 
 
+def _snapshot_project_dir(project_dir: Path, snapshot_dir: Path) -> None:
+    """Copy the current project files without sharing the mutable virtualenv."""
+    for child in project_dir.iterdir():
+        destination = snapshot_dir / child.name
+        if child.name == ".venv":
+            continue
+        elif child.is_dir():
+            shutil.copytree(child, destination, symlinks=True)
+        else:
+            shutil.copy2(child, destination, follow_symlinks=False)
+
+
 def _command_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("TERM", "xterm-256color")
@@ -199,6 +227,76 @@ def _command_env() -> dict[str, str]:
 
 def _normalize_enabled_tools(raw: Any) -> list[str]:
     return _normalize_enabled_tools_for_order(raw, TOOL_ORDER)
+
+
+def _normalize_analysis_identity(raw_client_id: Any, raw_request_id: Any) -> tuple[str | None, int | None]:
+    if raw_client_id is None and raw_request_id is None:
+        return None, None
+    if not isinstance(raw_client_id, str) or not raw_client_id.strip():
+        raise ValueError("analysis_client_id must be a non-empty string")
+    client_id = raw_client_id.strip()
+    if len(client_id) > 128:
+        raise ValueError("analysis_client_id must not exceed 128 characters")
+    if isinstance(raw_request_id, bool) or not isinstance(raw_request_id, int) or raw_request_id <= 0:
+        raise ValueError("analysis_request_id must be a positive integer")
+    return client_id, raw_request_id
+
+
+def _prune_analysis_request_history(now: float) -> None:
+    completed = {
+        client_id: last_seen
+        for client_id, (_, last_seen) in LATEST_ANALYSIS_REQUESTS.items()
+        if client_id not in ACTIVE_ANALYSES
+    }
+    for client_id, last_seen in completed.items():
+        if now - last_seen >= ANALYSIS_REQUEST_HISTORY_TTL_SECONDS:
+            del LATEST_ANALYSIS_REQUESTS[client_id]
+
+    overflow = len(LATEST_ANALYSIS_REQUESTS) - ANALYSIS_REQUEST_HISTORY_MAX_CLIENTS
+    if overflow <= 0:
+        return
+
+    completed = {
+        client_id: last_seen
+        for client_id, (_, last_seen) in LATEST_ANALYSIS_REQUESTS.items()
+        if client_id not in ACTIVE_ANALYSES
+    }
+    for client_id, _ in sorted(completed.items(), key=lambda item: item[1])[:overflow]:
+        del LATEST_ANALYSIS_REQUESTS[client_id]
+
+
+def _register_analysis(client_id: str | None, request_id: int | None) -> threading.Event:
+    cancel_event = threading.Event()
+    if client_id is None or request_id is None:
+        return cancel_event
+
+    with ACTIVE_ANALYSES_LOCK:
+        now = time.monotonic()
+        _prune_analysis_request_history(now)
+        latest = LATEST_ANALYSIS_REQUESTS.get(client_id)
+        if latest is not None and request_id <= latest[0]:
+            cancel_event.set()
+            return cancel_event
+
+        previous = ACTIVE_ANALYSES.get(client_id)
+        LATEST_ANALYSIS_REQUESTS[client_id] = (request_id, now)
+        ACTIVE_ANALYSES[client_id] = (request_id, cancel_event)
+        if previous is not None:
+            previous[1].set()
+    return cancel_event
+
+
+def _unregister_analysis(client_id: str | None, request_id: int | None, cancel_event: threading.Event) -> None:
+    if client_id is None or request_id is None:
+        return
+
+    with ACTIVE_ANALYSES_LOCK:
+        if ACTIVE_ANALYSES.get(client_id) == (request_id, cancel_event):
+            del ACTIVE_ANALYSES[client_id]
+            latest = LATEST_ANALYSIS_REQUESTS.get(client_id)
+            if latest is not None and latest[0] == request_id:
+                LATEST_ANALYSIS_REQUESTS[client_id] = (request_id, time.monotonic())
+            _prune_analysis_request_history(time.monotonic())
 
 
 def _normalize_enabled_tools_for_order(raw: Any, tool_order: list[str]) -> list[str]:
@@ -453,28 +551,31 @@ def _run_uv_sync(
     project_dir: Path,
     timeout_seconds: int = 300,
     dependency_cooldown_exempt_packages: list[str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     env = _command_env()
     started = time.perf_counter()
     command = _uv_sync_command(dependency_cooldown_exempt_packages)
     try:
-        completed = subprocess.run(
+        completed = _run_process(
             command,
             cwd=project_dir,
-            capture_output=True,
-            text=True,
             timeout=timeout_seconds,
             env=env,
-            check=False,
+            cancel_event=cancel_event,
         )
-        output = (completed.stdout or "") + (completed.stderr or "")
-        returncode = completed.returncode
+        if completed.cancelled:
+            output = "Cancelled because a newer analysis was requested."
+            returncode = -3
+        elif completed.timed_out:
+            output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
+            returncode = -2
+        else:
+            output = completed.stdout + completed.stderr
+            returncode = completed.returncode
     except FileNotFoundError as exc:
         output = f"Command not found: {exc}"
         returncode = -1
-    except subprocess.TimeoutExpired:
-        output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
-        returncode = -2
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
@@ -490,7 +591,7 @@ def _command_for_local_python_tool(spec: ToolSpec, repo_path: Path) -> list[str]
     if not spec.command:
         return list(spec.command)
     requirement = f"{spec.name} @ {repo_path}"
-    return ["uv", "run", "--with-editable", requirement, spec.command[0], *spec.command[1:]]
+    return ["uv", "run", "--frozen", "--with-editable", requirement, spec.command[0], *spec.command[1:]]
 
 
 def _command_for_tool(
@@ -521,7 +622,7 @@ def _command_for_tool(
     else:
         # Run tools via `uv run --with=<tool>` so they use the project's venv.
         with_spec = f"{spec.name}=={ty_pypi_version}" if (spec.name == "ty" and ty_pypi_version) else spec.name
-        command = ["uv", "run", f"--with={with_spec}", *spec.command]
+        command = ["uv", "run", "--frozen", f"--with={with_spec}", *spec.command]
 
     if python_version:
         if spec.name == "mypy":
@@ -565,31 +666,34 @@ def _run_command(
     cwd: Path,
     timeout_seconds: int | None = 120,
     env_overrides: dict[str, str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     env = _command_env()
     if env_overrides:
         env.update(env_overrides)
     try:
-        completed = subprocess.run(
+        completed = _run_process(
             command,
             cwd=cwd,
-            capture_output=True,
-            text=True,
             timeout=timeout_seconds,
             env=env,
-            check=False,
+            cancel_event=cancel_event,
         )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        output = _format_pyright_output(stdout, stderr, cwd) if name == "pyright" else (stdout + stderr)
-        returncode = completed.returncode
+        if completed.cancelled:
+            output = "Cancelled because a newer analysis was requested."
+            returncode = -3
+        elif completed.timed_out:
+            output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
+            returncode = -2
+        else:
+            stdout = completed.stdout
+            stderr = completed.stderr
+            output = _format_pyright_output(stdout, stderr, cwd) if name == "pyright" else (stdout + stderr)
+            returncode = completed.returncode
     except FileNotFoundError as exc:
         output = f"Command not found: {exc}"
         returncode = -1
-    except subprocess.TimeoutExpired:
-        output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
-        returncode = -2
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
@@ -599,6 +703,101 @@ def _run_command(
         "duration_ms": duration_ms,
         "output": output,
     }
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt" and process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=2,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            try:
+                process.terminate()
+            except OSError:
+                return
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                process.terminate()
+            except OSError:
+                return
+
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+    if os.name != "nt":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+
+def _run_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: int | None,
+    env: dict[str, str],
+    cancel_event: threading.Event | None = None,
+) -> ProcessResult:
+    if cancel_event is not None and cancel_event.is_set():
+        return ProcessResult("", "", -3, cancelled=True)
+
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=os.name != "nt",
+        creationflags=creationflags,
+    )
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            _terminate_process_tree(process)
+            stdout, stderr = process.communicate()
+            return ProcessResult(stdout or "", stderr or "", -3, cancelled=True)
+
+        wait_seconds = 0.1
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process_tree(process)
+                stdout, stderr = process.communicate()
+                return ProcessResult(stdout or "", stderr or "", -2, timed_out=True)
+            wait_seconds = min(wait_seconds, remaining)
+
+        try:
+            stdout, stderr = process.communicate(timeout=wait_seconds)
+        except subprocess.TimeoutExpired:
+            continue
+        return ProcessResult(stdout or "", stderr or "", process.returncode)
 
 
 _VERSION_RE = re.compile(r"\b\d+(?:\.\d+){1,3}(?:[-+._a-zA-Z0-9]*)?\b")
@@ -786,6 +985,7 @@ def _run_ruff_ty_from_repo(
     python_version: str | None,
     typeshed_path: Path | None,
     timeout_seconds: int | None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     return _run_command(
         RUFF_TY_TOOL_NAME,
@@ -793,6 +993,7 @@ def _run_ruff_ty_from_repo(
         project_dir,
         timeout_seconds,
         _venv_env_overrides(venv_python),
+        cancel_event,
     )
 
 
@@ -807,8 +1008,12 @@ def _iter_all_tools(
     ty_binary_path: Path | None = None,
     typeshed_path: Path | None = None,
     ty_pypi_version: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield (tool_name, result) pairs as each tool finishes."""
+    if cancel_event is not None and cancel_event.is_set():
+        return
+
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
     unsupported_typeshed_tools = {"zuban", "pycroscope"} if typeshed_path is not None else set()
 
@@ -845,6 +1050,8 @@ def _iter_all_tools(
         return
 
     for tool_name, result in skipped_results.items():
+        if cancel_event is not None and cancel_event.is_set():
+            return
         yield tool_name, result
 
     # For ruff_ty (cargo-built ty), we need venv_python for package resolution.
@@ -859,6 +1066,7 @@ def _iter_all_tools(
                 project_dir,
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS if (tool_name == "ty" and ty_binary_path is not None) else timeout_seconds,
                 None,
+                cancel_event,
             ): tool_name
             for tool_name, command in command_by_tool.items()
         }
@@ -872,9 +1080,14 @@ def _iter_all_tools(
                 python_version,
                 typeshed_path,
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
+                cancel_event,
             )] = RUFF_TY_TOOL_NAME
 
         for future in as_completed(futures):
+            if cancel_event is not None and cancel_event.is_set():
+                for pending in futures:
+                    pending.cancel()
+                return
             tool_name = futures[future]
             try:
                 yield tool_name, future.result()
@@ -890,11 +1103,11 @@ def _iter_all_tools(
 
 def _prime_tool_installs() -> dict[str, dict[str, Any]]:
     """Write a default pyproject.toml and run uv sync, then detect versions."""
-    pyproject_path = PROJECT_DIR / "pyproject.toml"
+    pyproject_path = STAGING_DIR / "pyproject.toml"
     if not pyproject_path.exists():
         pyproject_path.write_text(DEFAULT_PYPROJECT_TOML, encoding="utf-8")
-    _run_uv_sync(PROJECT_DIR)
-    return _detect_tool_versions(PROJECT_DIR)
+    _run_uv_sync(STAGING_DIR)
+    return _detect_tool_versions(STAGING_DIR)
 
 
 def _resolve_static_file(url_path: str) -> Path | None:
@@ -1080,7 +1293,7 @@ class AppHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
 
         if path == "/api/health":
-            _json_response(self, HTTPStatus.OK, {"ok": True, "server_id": SERVER_ID, "temp_dir": str(PROJECT_DIR)})
+            _json_response(self, HTTPStatus.OK, {"ok": True, "server_id": SERVER_ID, "staging_dir": str(STAGING_DIR)})
             return
 
         if path == "/api/bootstrap":
@@ -1099,7 +1312,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "initial_python_tool_repo_paths": {},
                     "initial_dependency_cooldown_exempt_packages": list(DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES),
                     "tool_versions": dict(TOOL_VERSIONS),
-                    "temp_dir": str(PROJECT_DIR),
+                    "staging_dir": str(STAGING_DIR),
                 },
             )
             return
@@ -1170,61 +1383,79 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             tool_order = _tool_order_for_request(ruff_repo_path)
             enabled_tools = _normalize_enabled_tools_for_order(body.get("enabled_tools"), tool_order)
-
-            with STATE_LOCK:
-                _write_files_to_project(PROJECT_DIR, files)
-
-                sync_result = _run_uv_sync(
-                    PROJECT_DIR,
-                    dependency_cooldown_exempt_packages=dependency_cooldown_exempt_packages,
-                )
-                if sync_result["returncode"] != 0:
-                    _json_response(
-                        self,
-                        HTTPStatus.BAD_REQUEST,
-                        {
-                            "error": "uv sync failed",
-                            "error_type": "dependency_install_failed",
-                            "dependency_install": sync_result,
-                            "python_version": python_version or "",
-                            "enabled_tools": enabled_tools,
-                            "tool_order": tool_order,
-                            "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
-                            "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
-                            "ty_pypi_version": ty_pypi_version or "",
-                            "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
-                            "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
-                            "dependency_cooldown_exempt_packages": dependency_cooldown_exempt_packages,
-                            "tool_versions": dict(TOOL_VERSIONS),
-                            "temp_dir": str(PROJECT_DIR),
-                        },
-                    )
+            analysis_client_id, analysis_request_id = _normalize_analysis_identity(
+                body.get("analysis_client_id"), body.get("analysis_request_id")
+            )
+            cancel_event = _register_analysis(analysis_client_id, analysis_request_id)
+            try:
+                if cancel_event.is_set():
+                    self.close_connection = True
                     return
 
-                base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
-                file_paths = [str(entry.get("name", "")) for entry in files]
+                with tempfile.TemporaryDirectory(prefix="multiplay-analysis-") as tmp:
+                    analysis_dir = Path(tmp)
+                    with STATE_LOCK:
+                        _write_files_to_project(STAGING_DIR, files)
+                        _snapshot_project_dir(STAGING_DIR, analysis_dir)
 
-                # Stream NDJSON: metadata, then each tool result, then done.
-                _ndjson_start(self)
-                _ndjson_send(self, {
-                    "type": "metadata",
-                    "tool_versions": dict(TOOL_VERSIONS),
-                    "python_version": python_version or "",
-                    "python_versions": [*SUPPORTED_PYTHON_VERSIONS, ""],
-                    "enabled_tools": enabled_tools,
-                    "tool_order": tool_order,
-                    "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
-                    "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
-                    "ty_pypi_version": ty_pypi_version or "",
-                    "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
-                    "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
-                    "dependency_cooldown_exempt_packages": dependency_cooldown_exempt_packages,
-                    "temp_dir": str(PROJECT_DIR),
-                })
+                    if cancel_event.is_set():
+                        self.close_connection = True
+                        return
 
-                try:
+                    sync_result = _run_uv_sync(
+                        analysis_dir,
+                        dependency_cooldown_exempt_packages=dependency_cooldown_exempt_packages,
+                        cancel_event=cancel_event,
+                    )
+                    if cancel_event.is_set():
+                        self.close_connection = True
+                        return
+                    if sync_result["returncode"] != 0:
+                        _json_response(
+                            self,
+                            HTTPStatus.BAD_REQUEST,
+                            {
+                                "error": "uv sync failed",
+                                "error_type": "dependency_install_failed",
+                                "dependency_install": sync_result,
+                                "python_version": python_version or "",
+                                "enabled_tools": enabled_tools,
+                                "tool_order": tool_order,
+                                "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
+                                "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
+                                "ty_pypi_version": ty_pypi_version or "",
+                                "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
+                                "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
+                                "dependency_cooldown_exempt_packages": dependency_cooldown_exempt_packages,
+                                "tool_versions": dict(TOOL_VERSIONS),
+                                "staging_dir": str(STAGING_DIR),
+                            },
+                        )
+                        return
+
+                    base_enabled_tools = [tool_name for tool_name in enabled_tools if tool_name in TOOL_SPEC_BY_NAME]
+                    file_paths = [str(entry.get("name", "")) for entry in files]
+
+                    # Stream NDJSON: metadata, then each tool result, then done.
+                    _ndjson_start(self)
+                    _ndjson_send(self, {
+                        "type": "metadata",
+                        "tool_versions": dict(TOOL_VERSIONS),
+                        "python_version": python_version or "",
+                        "python_versions": [*SUPPORTED_PYTHON_VERSIONS, ""],
+                        "enabled_tools": enabled_tools,
+                        "tool_order": tool_order,
+                        "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
+                        "ty_binary_path": str(ty_binary_path) if ty_binary_path is not None else "",
+                        "ty_pypi_version": ty_pypi_version or "",
+                        "typeshed_path": str(typeshed_path) if typeshed_path is not None else "",
+                        "python_tool_repo_paths": _python_tool_repo_paths_payload(python_tool_repo_paths),
+                        "dependency_cooldown_exempt_packages": dependency_cooldown_exempt_packages,
+                        "staging_dir": str(STAGING_DIR),
+                    })
+
                     for tool_name, result in _iter_all_tools(
-                        PROJECT_DIR,
+                        analysis_dir,
                         python_tool_repo_paths,
                         base_enabled_tools,
                         timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
@@ -1234,11 +1465,21 @@ class AppHandler(BaseHTTPRequestHandler):
                         ty_binary_path=ty_binary_path,
                         typeshed_path=typeshed_path,
                         ty_pypi_version=ty_pypi_version,
+                        cancel_event=cancel_event,
                     ):
+                        if cancel_event.is_set():
+                            self.close_connection = True
+                            return
                         _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
+                    if cancel_event.is_set():
+                        self.close_connection = True
+                        return
                     _ndjson_send(self, {"type": "done"})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+            except (BrokenPipeError, ConnectionResetError):
+                cancel_event.set()
+                self.close_connection = True
+            finally:
+                _unregister_analysis(analysis_client_id, analysis_request_id, cancel_event)
         except ValueError as exc:
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except json.JSONDecodeError:
@@ -1393,7 +1634,7 @@ def main() -> None:
         except OSError:
             port += 1
     print(f"Static directory: {STATIC_DIR}")
-    print(f"Temporary project directory: {PROJECT_DIR}")
+    print(f"Staging directory: {STAGING_DIR}")
     url = f"http://{args.host}:{port}"
     print(f"\nServing app on \033[1;4;32m{url}\033[0m")
 
@@ -1407,7 +1648,7 @@ def main() -> None:
     finally:
         # On Windows, temp directories aren't automatically cleaned up.
         if os.name == "nt":
-            shutil.rmtree(PROJECT_DIR, ignore_errors=True)
+            shutil.rmtree(STAGING_DIR, ignore_errors=True)
 
 
 if __name__ == "__main__":
