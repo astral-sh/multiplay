@@ -89,6 +89,10 @@ class ProcessResult:
     cancelled: bool = False
 
 
+class InvalidTyBinaryPathError(ValueError):
+    pass
+
+
 TOOL_SPECS = [
     ToolSpec("ty", ["ty", "check"], ["ty", "--version"]),
     ToolSpec("pyright", ["pyright", "--outputjson"], ["pyright", "--version"]),
@@ -350,7 +354,7 @@ def _normalize_ty_binary_path(raw: Any) -> Path | None:
     if raw is None:
         return None
     if not isinstance(raw, str):
-        return None
+        raise ValueError("ty_binary_path must be a string")
 
     text = raw.strip()
     if not text:
@@ -359,11 +363,11 @@ def _normalize_ty_binary_path(raw: Any) -> Path | None:
     path = Path(text).expanduser()
     try:
         resolved = path.resolve(strict=True)
-    except (FileNotFoundError, OSError):
-        return None
+    except (FileNotFoundError, OSError) as exc:
+        raise InvalidTyBinaryPathError(f"ty binary path does not exist: {text!r}") from exc
 
     if not resolved.is_file():
-        return None
+        raise InvalidTyBinaryPathError(f"ty binary path is not a file: {text!r}")
     return resolved
 
 
@@ -1480,6 +1484,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
             finally:
                 _unregister_analysis(analysis_client_id, analysis_request_id, cancel_event)
+        except InvalidTyBinaryPathError as exc:
+            _json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"error": str(exc), "error_type": "invalid_ty_binary_path"},
+            )
         except ValueError as exc:
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except json.JSONDecodeError:
