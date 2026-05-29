@@ -16,6 +16,7 @@ function saveState() {
         tyBinaryPath: state.tyBinaryPath,
         tyPypiVersion: state.tyPypiVersion,
         typeshedPath: state.typeshedPath,
+        pythonToolRepoPaths: state.pythonToolRepoPaths,
         dependencyCooldownExemptPackages: state.dependencyCooldownExemptPackages,
         toolOrder: toolOrder.slice(),
         toolSettings: state.toolSettings,
@@ -61,6 +62,7 @@ function loadSavedState() {
       tyBinaryPath: typeof data.tyBinaryPath === "string" ? data.tyBinaryPath : "",
       tyPypiVersion: typeof data.tyPypiVersion === "string" ? data.tyPypiVersion : "",
       typeshedPath: typeof data.typeshedPath === "string" ? data.typeshedPath : "",
+      pythonToolRepoPaths: normalizePythonToolRepoPaths(data.pythonToolRepoPaths),
       dependencyCooldownExemptPackages: normalizeDependencyCooldownExemptPackages(data.dependencyCooldownExemptPackages),
       toolOrder: savedToolOrder,
       toolSettings: savedToolSettings,
@@ -2610,6 +2612,12 @@ async function analyze({ onlyTools } = {}) {
           return;
         }
         clearDependencyInstallError();
+        if (body?.error_type === "invalid_ty_binary_path") {
+          state.resolvedTyBinaryPath = "";
+          syncTySourceUI();
+          delete state.lastResults.ty;
+          renderResults(state.lastResults);
+        }
         setStatus("Request failed: " + (body.error || resp.status));
         return;
       }
@@ -2690,6 +2698,17 @@ const TOOL_DEFAULT_CONFIG = {
   pycroscope: 'import_paths = ["."]',
 };
 
+function toolDefaultConfig(tool) {
+  const name = tool === RUFF_TY_TOOL ? "ty" : tool;
+  return TOOL_DEFAULT_CONFIG[name] || "";
+}
+
+function toolConfigContent(tool) {
+  const section = toolConfigSection(tool);
+  const defaults = toolDefaultConfig(tool);
+  return defaults ? `${section}\n${defaults}` : section;
+}
+
 function buildPyprojectContent() {
   const projectSection = '[project]\nname = "sandbox"\nversion = "0.1.0"\nrequires-python = ">=3.10"\ndependencies = []';
   const seen = new Set();
@@ -2699,7 +2718,7 @@ function buildPyprojectContent() {
     const header = toolConfigSection(name);
     if (!seen.has(header)) {
       seen.add(header);
-      const defaults = TOOL_DEFAULT_CONFIG[name] || "";
+      const defaults = toolDefaultConfig(name);
       if (defaults) {
         withDefaults.push(`${header}\n${defaults}`);
       } else {
@@ -2728,11 +2747,22 @@ function openConfigFile(tool) {
   }
 
   const existingIndex = state.files.findIndex((f) => f.name === "pyproject.toml");
+  let pyproject;
   if (existingIndex >= 0) {
     state.activeIndex = existingIndex;
+    pyproject = state.files[existingIndex];
   } else {
-    state.files.push({ name: "pyproject.toml", content: buildPyprojectContent() });
+    pyproject = { name: "pyproject.toml", content: buildPyprojectContent() };
+    state.files.push(pyproject);
     state.activeIndex = state.files.length - 1;
+  }
+
+  if (!pyproject.content.includes(section)) {
+    let separator = "";
+    if (pyproject.content) {
+      separator = pyproject.content.endsWith("\n") ? "\n\n" : "\n\n\n";
+    }
+    pyproject.content += separator + toolConfigContent(tool) + "\n";
   }
 
   renderTabs();
@@ -3262,6 +3292,9 @@ async function bootstrap() {
     syncTySourceUI();
     state.typeshedPath = normalizeTypeshedPath(saved.typeshedPath);
     typeshedPathEl.value = state.typeshedPath;
+    state.pythonToolRepoPaths = normalizePythonToolRepoPaths(saved.pythonToolRepoPaths);
+    mypyRepoPathEl.value = pythonToolRepoPathForTool("mypy");
+    pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
     state.dependencyCooldownExemptPackages = normalizeDependencyCooldownExemptPackages(saved.dependencyCooldownExemptPackages);
     syncDependencyCooldownExemptPackagesInput();
     if (saved.toolOrder) {

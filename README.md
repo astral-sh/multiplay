@@ -45,7 +45,7 @@ Then open [http://localhost:8000](http://localhost:8000).
 Pycroscope imports the code, so don't enter any code in the playground that you
 don't want imported on your system.
 
-Each type checker run has a 2-second timeout during analyze; if exceeded,
+Each type checker run has a 10-second timeout during analyze; if exceeded,
 that tool returns a timeout error while others still complete.
 
 Each checker card includes:
@@ -59,7 +59,7 @@ Optional local Ruff `ty` checker:
 - provide a local Ruff clone path in the "Local checker directories (optional)" section
 - this adds a `ty (/path/to/checkout)` checker card for side-by-side comparison
 - backend runs it from that repo with `cargo run --bin ty -- check --project <temp-project-path>`
-- this local-checkout run is not capped by the 2-second analyze timeout
+- this local-checkout run is not capped by the 10-second analyze timeout
 
 Optional local Python checker checkouts:
 - open the "Local checker directories (optional)" section in the header
