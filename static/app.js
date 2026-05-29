@@ -107,6 +107,45 @@ const TOOL_DOCS_URL = {
 let draggedTool = null;
 let draggedFileIndex = null;
 
+const ANALYSIS_CLIENT_ID = (() => {
+  const storageKey = "multiplay-analysis-client-id";
+  try {
+    const existing = sessionStorage.getItem(storageKey);
+    const navigation =
+      typeof performance !== "undefined" && typeof performance.getEntriesByType === "function"
+        ? performance.getEntriesByType("navigation")[0]
+        : null;
+    // Preserve the ID across reloads so the new page can cancel abandoned work.
+    // A duplicated tab inherits session storage, so other navigations need a
+    // fresh ID to keep their analyses independent.
+    if (existing && navigation?.type === "reload") return existing;
+    const generated =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+    sessionStorage.setItem(storageKey, generated);
+    return generated;
+  } catch {
+    return `${Date.now()}-${Math.random()}`;
+  }
+})();
+
+function nextAnalysisRequestId() {
+  const storageKey = "multiplay-analysis-request-id";
+  let requestId = state.requestNumber + 1;
+  try {
+    const stored = Number(sessionStorage.getItem(storageKey));
+    if (Number.isSafeInteger(stored) && stored >= requestId && stored < Number.MAX_SAFE_INTEGER) {
+      requestId = stored + 1;
+    }
+    sessionStorage.setItem(storageKey, String(requestId));
+  } catch {
+    // Keep a page-local counter when session storage is unavailable.
+  }
+  state.requestNumber = requestId;
+  return requestId;
+}
+
 const state = {
   files: [],
   pythonVersion: DEFAULT_PYTHON_VERSION,
@@ -557,7 +596,7 @@ function getAnsiFgBright() {
   return isDark ? ANSI_FG_BRIGHT_DARK : ANSI_FG_BRIGHT_LIGHT;
 }
 
-let _tempDirText = "";
+let _stagingDirText = "";
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -565,31 +604,31 @@ function setStatus(text) {
   _rebuildStatusLine();
 }
 
-function setTempDir(text) {
-  _tempDirText = text;
+function setStagingDir(text) {
+  _stagingDirText = text;
   _rebuildStatusLine();
 }
 
 function _rebuildStatusLine() {
-  // Keep the <span id="status"> intact; append temp-dir after a separator
+  // Keep the <span id="status"> intact; append staging-dir after a separator
   const existing = statusLineEl.querySelector(".status-sep");
   if (existing) existing.remove();
-  const existingTd = statusLineEl.querySelector(".status-tempdir");
-  if (existingTd) existingTd.remove();
-  if (_tempDirText && statusEl.textContent) {
+  const existingSd = statusLineEl.querySelector(".status-stagingdir");
+  if (existingSd) existingSd.remove();
+  if (_stagingDirText && statusEl.textContent) {
     const sep = document.createElement("span");
     sep.className = "status-sep";
     sep.textContent = " · ";
     statusLineEl.appendChild(sep);
-    const td = document.createElement("span");
-    td.className = "status-tempdir";
-    td.textContent = _tempDirText;
-    statusLineEl.appendChild(td);
-  } else if (_tempDirText) {
-    const td = document.createElement("span");
-    td.className = "status-tempdir";
-    td.textContent = _tempDirText;
-    statusLineEl.appendChild(td);
+    const sd = document.createElement("span");
+    sd.className = "status-stagingdir";
+    sd.textContent = _stagingDirText;
+    statusLineEl.appendChild(sd);
+  } else if (_stagingDirText) {
+    const sd = document.createElement("span");
+    sd.className = "status-stagingdir";
+    sd.textContent = _stagingDirText;
+    statusLineEl.appendChild(sd);
   }
 }
 
@@ -2355,8 +2394,8 @@ function handleMetadataMessage(msg) {
       }
     });
   }
-  if (typeof msg.temp_dir === "string" && msg.temp_dir) {
-    setTempDir("Temp directory: " + msg.temp_dir);
+  if (typeof msg.staging_dir === "string" && msg.staging_dir) {
+    setStagingDir("Staging directory: " + msg.staging_dir);
   }
 
   refreshResultTitles();
@@ -2520,7 +2559,7 @@ function updateResultCard(tool, result) {
 }
 
 async function analyze({ onlyTools } = {}) {
-  const requestId = ++state.requestNumber;
+  const requestId = nextAnalysisRequestId();
   setStatus("Analyzing...");
 
   // Abort previous in-flight request
@@ -2542,6 +2581,8 @@ async function analyze({ onlyTools } = {}) {
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
     dependency_cooldown_exempt_packages: state.dependencyCooldownExemptPackages,
     enabled_tools: toolsToSend,
+    analysis_client_id: ANALYSIS_CLIENT_ID,
+    analysis_request_id: requestId,
   };
 
   try {
@@ -3090,8 +3131,8 @@ function loadFromBootstrap(body) {
   state.pythonVersion = normalizePythonVersion(body.initial_python_version, state.pythonVersionOptions);
   pythonVersionEl.value = state.pythonVersion;
 
-  if (typeof body.temp_dir === "string" && body.temp_dir) {
-    setTempDir("Temp directory: " + body.temp_dir);
+  if (typeof body.staging_dir === "string" && body.staging_dir) {
+    setStagingDir("Staging directory: " + body.staging_dir);
   }
 
   state.lastResults = {};
