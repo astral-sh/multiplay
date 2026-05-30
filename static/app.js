@@ -2689,12 +2689,12 @@ async function analyze({ onlyTools } = {}) {
 }
 
 const TOOL_DEFAULT_CONFIG = {
-  ty: '[tool.ty.rules]\nundefined-reveal = "ignore"',
+  ty: '[tool.ty.rules]\ndeprecated = "warn"\nundefined-reveal = "ignore"',
   pyright:
-    "reportWildcardImportFromLibrary = false\nreportSelfClsParameterName = false\nreportUnusedExpression = false",
-  pyrefly: "[tool.pyrefly.errors]\nunimported-directive = false",
-  mypy: "color_output = true\npretty = true\ncheck_untyped_defs = true",
-  zuban: "pretty = true\ncheck_untyped_defs = true",
+    'reportDeprecated = "warning"\nreportWildcardImportFromLibrary = false\nreportSelfClsParameterName = false\nreportUnusedExpression = false',
+  pyrefly: '[tool.pyrefly.errors]\ndeprecated = "error"\nunimported-directive = false',
+  mypy: 'color_output = true\npretty = true\ncheck_untyped_defs = true\nenable_error_code = ["deprecated"]',
+  zuban: 'pretty = true\ncheck_untyped_defs = true\nenable_error_code = ["deprecated"]',
   pycroscope: 'import_paths = ["."]',
 };
 

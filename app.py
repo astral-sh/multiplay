@@ -36,10 +36,12 @@ dependencies = []
 
 [tool.ty]
 [tool.ty.rules]
+deprecated = "warn"
 undefined-reveal = "ignore"
 
 
 [tool.pyright]
+reportDeprecated = "warning"
 reportWildcardImportFromLibrary = false
 reportSelfClsParameterName = false
 reportUnusedExpression = false
@@ -47,6 +49,7 @@ reportUnusedExpression = false
 
 [tool.pyrefly]
 [tool.pyrefly.errors]
+deprecated = "error"
 unimported-directive = false
 
 
@@ -54,11 +57,13 @@ unimported-directive = false
 color_output = true
 pretty = true
 check_untyped_defs = true
+enable_error_code = ["deprecated"]
 
 
 [tool.zuban]
 pretty = true
 check_untyped_defs = true
+enable_error_code = ["deprecated"]
 
 
 [tool.pycroscope]
