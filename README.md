@@ -17,6 +17,13 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
    - `python -m pycroscope --output-format concise .`
 5. Display output from each tool in the UI
 
+The runtime pane is always present and collapsed by default. Expanding it runs
+`main.py` (or the first Python file when there is no `main.py`) with the selected
+Python version and the project's installed dependencies; while collapsed, the
+runtime check is skipped. The runtime interpreter installs `typing.reveal_type`
+as the built-in `reveal_type` when available, and provides the same built-in
+behavior without modifying `typing` on Python 3.10.
+
 ## Run
 
 ```bash
@@ -42,8 +49,8 @@ Then open [http://localhost:8000](http://localhost:8000).
 
 ## Notes
 
-Pycroscope imports the code, so don't enter any code in the playground that you
-don't want imported on your system.
+Pycroscope imports the code, and expanding the runtime pane executes it. Don't
+enter code in the playground that you don't want run on your system.
 
 Each type checker run has a 10-second timeout during analyze; if exceeded,
 that tool returns a timeout error while others still complete.
