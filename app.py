@@ -1107,6 +1107,7 @@ def _iter_all_tools(
     project_dir: Path,
     python_tool_repo_paths: dict[str, Path] | None = None,
     enabled_tools: list[str] | None = None,
+    runtime_enabled: bool = False,
     timeout_seconds: int = 120,
     file_paths: list[str] | None = None,
     ruff_repo_path: Path | None = None,
@@ -1123,7 +1124,7 @@ def _iter_all_tools(
     selected_specs = TOOL_SPECS if enabled_tools is None else [TOOL_SPEC_BY_NAME[name] for name in enabled_tools if name in TOOL_SPEC_BY_NAME]
     unsupported_typeshed_tools = {"zuban", "pycroscope"} if typeshed_path is not None else set()
 
-    # venv_python is needed for: custom ty binary (--python flag) and zuban (--python-executable).
+    # The custom ty binary, zuban, local Ruff, and runtime all use the project interpreter.
     venv_python = _venv_python_path(project_dir)
 
     skipped_results: dict[str, dict[str, Any]] = {}
@@ -1145,11 +1146,11 @@ def _iter_all_tools(
         for spec in runnable_specs
     }
 
-    # Include ruff_ty in the same executor so it runs in parallel.
+    # Include ruff_ty and the runtime in the same executor so they run in parallel.
     # The caller only passes ruff_repo_path when ty_ruff is enabled.
     include_ruff_ty = ruff_repo_path is not None
 
-    total_workers = len(command_by_tool) + (1 if include_ruff_ty else 0)
+    total_workers = len(command_by_tool) + (1 if include_ruff_ty else 0) + (1 if runtime_enabled else 0)
     if total_workers == 0:
         for tool_name, result in skipped_results.items():
             yield tool_name, result
@@ -1160,8 +1161,8 @@ def _iter_all_tools(
             return
         yield tool_name, result
 
-    # For ruff_ty (cargo-built ty), we need venv_python for package resolution.
-    ruff_ty_venv_python = _venv_python_path(project_dir) if include_ruff_ty else None
+    # The cargo-built ty needs the interpreter for package resolution.
+    ruff_ty_venv_python = venv_python if include_ruff_ty else None
 
     with ThreadPoolExecutor(max_workers=max(1, total_workers)) as executor:
         futures = {
@@ -1188,6 +1189,15 @@ def _iter_all_tools(
                 LOCAL_CHECKOUT_TOOL_TIMEOUT_SECONDS,
                 cancel_event,
             )] = RUFF_TY_TOOL_NAME
+        if runtime_enabled:
+            futures[executor.submit(
+                _run_runtime,
+                project_dir,
+                venv_python,
+                file_paths or [],
+                timeout_seconds,
+                cancel_event,
+            )] = RUNTIME_TOOL_NAME
 
         for future in as_completed(futures):
             if cancel_event is not None and cancel_event.is_set():
@@ -1568,6 +1578,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         analysis_dir,
                         python_tool_repo_paths,
                         base_enabled_tools,
+                        runtime_enabled=runtime_enabled,
                         timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
                         file_paths=file_paths,
                         ruff_repo_path=ruff_repo_path if RUFF_TY_TOOL_NAME in enabled_tools else None,
@@ -1581,24 +1592,6 @@ class AppHandler(BaseHTTPRequestHandler):
                             self.close_connection = True
                             return
                         _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
-                    if runtime_enabled:
-                        if cancel_event.is_set():
-                            self.close_connection = True
-                            return
-                        runtime_result = _run_runtime(
-                            analysis_dir,
-                            _venv_python_path(analysis_dir),
-                            file_paths,
-                            timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
-                            cancel_event=cancel_event,
-                        )
-                        if cancel_event.is_set():
-                            self.close_connection = True
-                            return
-                        _ndjson_send(
-                            self,
-                            {"type": "result", "tool": RUNTIME_TOOL_NAME, "data": runtime_result},
-                        )
                     if cancel_event.is_set():
                         self.close_connection = True
                         return

@@ -3,8 +3,10 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import app
 
@@ -133,6 +135,43 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("ready\n", result["output"])
         self.assertIn(f"Timed out after 0.1s: {sys.executable} main.py", result["output"])
         self.assertNotIn("runpy.run_path", result["output"])
+
+    def test_runtime_result_does_not_wait_for_local_ruff_build(self) -> None:
+        ruff_started = threading.Event()
+        release_ruff = threading.Event()
+
+        def run_ruff(*_args: object, **_kwargs: object) -> dict[str, object]:
+            ruff_started.set()
+            self.assertTrue(release_ruff.wait(timeout=5))
+            return {"tool": app.RUFF_TY_TOOL_NAME, "returncode": 0, "output": "ruff done"}
+
+        runtime_result = {"tool": app.RUNTIME_TOOL_NAME, "returncode": 0, "output": "runtime done"}
+
+        def run_runtime(*_args: object, **_kwargs: object) -> dict[str, object]:
+            self.assertTrue(ruff_started.wait(timeout=5))
+            return runtime_result
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(app, "_run_ruff_ty_from_repo", side_effect=run_ruff),
+            patch.object(app, "_run_runtime", side_effect=run_runtime),
+        ):
+            results = app._iter_all_tools(
+                Path(tmp),
+                enabled_tools=[],
+                runtime_enabled=True,
+                file_paths=["main.py"],
+                ruff_repo_path=Path(tmp),
+            )
+
+            try:
+                tool_name, result = next(results)
+                self.assertTrue(ruff_started.is_set())
+                self.assertEqual(tool_name, app.RUNTIME_TOOL_NAME)
+                self.assertEqual(result, runtime_result)
+            finally:
+                release_ruff.set()
+            self.assertEqual([tool for tool, _result in results], [app.RUFF_TY_TOOL_NAME])
 
 
 if __name__ == "__main__":
