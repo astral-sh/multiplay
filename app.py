@@ -113,7 +113,33 @@ TOOL_SPECS = [
 TOOL_SPEC_BY_NAME = {spec.name: spec for spec in TOOL_SPECS}
 TOOL_ORDER = [spec.name for spec in TOOL_SPECS]
 RUFF_TY_TOOL_NAME = "ty_ruff"
+RUNTIME_TOOL_NAME = "runtime"
 PYTHON_IMPLEMENTED_TOOLS = ("mypy", "pycroscope")
+
+RUNTIME_BOOTSTRAP = """\
+import builtins
+from pathlib import Path
+import runpy
+import sys
+import typing
+
+if hasattr(typing, "reveal_type"):
+    builtins.reveal_type = typing.reveal_type
+else:
+    def reveal_type(obj):
+        print(f"Runtime type is {type(obj).__name__!r}", file=sys.stderr, flush=True)
+        return obj
+
+    builtins.reveal_type = reveal_type
+entrypoint = sys.argv[1]
+sys.argv[:] = [entrypoint]
+script_dir = str(Path(entrypoint).resolve().parent)
+if sys.path:
+    sys.path[0] = script_dir
+else:
+    sys.path.insert(0, script_dir)
+runpy.run_path(entrypoint, run_name="__main__")
+"""
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -448,6 +474,14 @@ def _normalize_python_version(raw: Any) -> str | None:
     return value
 
 
+def _normalize_runtime_enabled(raw: Any) -> bool:
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise ValueError("runtime_enabled must be a boolean")
+    return raw
+
+
 def _normalize_python_tool_repo_paths(raw: Any) -> dict[str, Path]:
     if raw is None:
         return {}
@@ -546,13 +580,18 @@ def _normalize_dependency_cooldown_exempt_packages(raw: Any) -> list[str]:
     return normalized
 
 
-def _uv_sync_command(dependency_cooldown_exempt_packages: list[str] | None = None) -> list[str]:
+def _uv_sync_command(
+    dependency_cooldown_exempt_packages: list[str] | None = None,
+    python_version: str | None = None,
+) -> list[str]:
     command = ["uv", "sync", "--exclude-newer", DEPENDENCY_COOLDOWN]
     packages = dependency_cooldown_exempt_packages
     if packages is None:
         packages = DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES
     for package in packages:
         command.extend(["--exclude-newer-package", f"{package}={DEPENDENCY_COOLDOWN_EXEMPTION}"])
+    if python_version is not None:
+        command.extend(["--python", python_version])
     return command
 
 
@@ -560,11 +599,12 @@ def _run_uv_sync(
     project_dir: Path,
     timeout_seconds: int = 300,
     dependency_cooldown_exempt_packages: list[str] | None = None,
+    python_version: str | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     env = _command_env()
     started = time.perf_counter()
-    command = _uv_sync_command(dependency_cooldown_exempt_packages)
+    command = _uv_sync_command(dependency_cooldown_exempt_packages, python_version)
     try:
         completed = _run_process(
             command,
@@ -673,11 +713,15 @@ def _run_command(
     name: str,
     command: list[str],
     cwd: Path,
-    timeout_seconds: int | None = 120,
+    timeout_seconds: float | None = 120,
     env_overrides: dict[str, str] | None = None,
     cancel_event: threading.Event | None = None,
+    merge_stderr: bool = False,
+    stdin_devnull: bool = False,
+    display_command: list[str] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    visible_command = display_command or command
     env = _command_env()
     if env_overrides:
         env.update(env_overrides)
@@ -688,12 +732,17 @@ def _run_command(
             timeout=timeout_seconds,
             env=env,
             cancel_event=cancel_event,
+            merge_stderr=merge_stderr,
+            stdin_devnull=stdin_devnull,
         )
         if completed.cancelled:
             output = "Cancelled because a newer analysis was requested."
             returncode = -3
         elif completed.timed_out:
-            output = f"Timed out after {timeout_seconds}s: {' '.join(command)}"
+            output = completed.stdout + completed.stderr
+            if output and not output.endswith("\n"):
+                output += "\n"
+            output += f"Timed out after {timeout_seconds}s: {' '.join(visible_command)}"
             returncode = -2
         else:
             stdout = completed.stdout
@@ -707,7 +756,7 @@ def _run_command(
     duration_ms = int((time.perf_counter() - started) * 1000)
     return {
         "tool": name,
-        "command": " ".join(command),
+        "command": " ".join(visible_command),
         "returncode": returncode,
         "duration_ms": duration_ms,
         "output": output,
@@ -767,9 +816,11 @@ def _run_process(
     command: list[str],
     *,
     cwd: Path,
-    timeout: int | None,
+    timeout: float | None,
     env: dict[str, str],
     cancel_event: threading.Event | None = None,
+    merge_stderr: bool = False,
+    stdin_devnull: bool = False,
 ) -> ProcessResult:
     if cancel_event is not None and cancel_event.is_set():
         return ProcessResult("", "", -3, cancelled=True)
@@ -779,7 +830,8 @@ def _run_process(
         command,
         cwd=cwd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+        stdin=subprocess.DEVNULL if stdin_devnull else None,
         text=True,
         env=env,
         start_new_session=os.name != "nt",
@@ -807,6 +859,51 @@ def _run_process(
         except subprocess.TimeoutExpired:
             continue
         return ProcessResult(stdout or "", stderr or "", process.returncode)
+
+
+def _runtime_entrypoint(file_paths: list[str]) -> str | None:
+    normalized_paths = [_safe_relative_path(path).as_posix() for path in file_paths]
+    python_files = [path for path in normalized_paths if Path(path).suffix == ".py"]
+    if "main.py" in python_files:
+        return "main.py"
+    return python_files[0] if python_files else None
+
+
+def _run_runtime(
+    project_dir: Path,
+    venv_python: Path | None,
+    file_paths: list[str],
+    timeout_seconds: float = 120,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    entrypoint = _runtime_entrypoint(file_paths)
+    if entrypoint is None:
+        return {
+            "tool": RUNTIME_TOOL_NAME,
+            "command": "",
+            "returncode": 0,
+            "duration_ms": 0,
+            "output": "(no Python file to run)\n",
+        }
+    if venv_python is None:
+        return {
+            "tool": RUNTIME_TOOL_NAME,
+            "command": "",
+            "returncode": -1,
+            "duration_ms": 0,
+            "output": "Python interpreter not found after dependency installation.\n",
+        }
+
+    return _run_command(
+        RUNTIME_TOOL_NAME,
+        [str(venv_python), "-u", "-c", RUNTIME_BOOTSTRAP, entrypoint],
+        project_dir,
+        timeout_seconds,
+        cancel_event=cancel_event,
+        merge_stderr=True,
+        stdin_devnull=True,
+        display_command=[str(venv_python), entrypoint],
+    )
 
 
 _VERSION_RE = re.compile(r"\b\d+(?:\.\d+){1,3}(?:[-+._a-zA-Z0-9]*)?\b")
@@ -1382,6 +1479,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(files, list) or not files:
                 raise ValueError("Expected non-empty 'files' list")
             python_version = _normalize_python_version(body.get("python_version"))
+            runtime_enabled = _normalize_runtime_enabled(body.get("runtime_enabled"))
             ruff_repo_path = _normalize_ruff_repo_path(body.get("ruff_repo_path"))
             ty_binary_path = _normalize_ty_binary_path(body.get("ty_binary_path"))
             ty_pypi_version = _normalize_ty_pypi_version(body.get("ty_pypi_version"))
@@ -1414,6 +1512,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     sync_result = _run_uv_sync(
                         analysis_dir,
                         dependency_cooldown_exempt_packages=dependency_cooldown_exempt_packages,
+                        python_version=python_version if runtime_enabled else None,
                         cancel_event=cancel_event,
                     )
                     if cancel_event.is_set():
@@ -1428,6 +1527,7 @@ class AppHandler(BaseHTTPRequestHandler):
                                 "error_type": "dependency_install_failed",
                                 "dependency_install": sync_result,
                                 "python_version": python_version or "",
+                                "runtime_enabled": runtime_enabled,
                                 "enabled_tools": enabled_tools,
                                 "tool_order": tool_order,
                                 "ruff_repo_path": str(ruff_repo_path) if ruff_repo_path is not None else "",
@@ -1451,6 +1551,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         "type": "metadata",
                         "tool_versions": dict(TOOL_VERSIONS),
                         "python_version": python_version or "",
+                        "runtime_enabled": runtime_enabled,
                         "python_versions": [*SUPPORTED_PYTHON_VERSIONS, ""],
                         "enabled_tools": enabled_tools,
                         "tool_order": tool_order,
@@ -1480,6 +1581,24 @@ class AppHandler(BaseHTTPRequestHandler):
                             self.close_connection = True
                             return
                         _ndjson_send(self, {"type": "result", "tool": tool_name, "data": result})
+                    if runtime_enabled:
+                        if cancel_event.is_set():
+                            self.close_connection = True
+                            return
+                        runtime_result = _run_runtime(
+                            analysis_dir,
+                            _venv_python_path(analysis_dir),
+                            file_paths,
+                            timeout_seconds=ANALYZE_TOOL_TIMEOUT_SECONDS,
+                            cancel_event=cancel_event,
+                        )
+                        if cancel_event.is_set():
+                            self.close_connection = True
+                            return
+                        _ndjson_send(
+                            self,
+                            {"type": "result", "tool": RUNTIME_TOOL_NAME, "data": runtime_result},
+                        )
                     if cancel_event.is_set():
                         self.close_connection = True
                         return

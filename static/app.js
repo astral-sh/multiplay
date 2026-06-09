@@ -1,4 +1,5 @@
 const STORAGE_KEY = "multiplay_state";
+const TOOL_SETTINGS_VERSION = 1;
 const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15", ""];
 const DEFAULT_PYTHON_VERSION = "3.14";
 const DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES = ["ty"];
@@ -20,6 +21,7 @@ function saveState() {
         dependencyCooldownExemptPackages: state.dependencyCooldownExemptPackages,
         toolOrder: toolOrder.slice(),
         toolSettings: state.toolSettings,
+        toolSettingsVersion: TOOL_SETTINGS_VERSION,
       }),
     );
   } catch {
@@ -44,10 +46,14 @@ function loadSavedState() {
     let savedToolSettings = null;
     if (data.toolSettings && typeof data.toolSettings === "object" && !Array.isArray(data.toolSettings)) {
       savedToolSettings = {};
+      const toolSettingsVersion = Number.isInteger(data.toolSettingsVersion) ? data.toolSettingsVersion : 0;
       for (const [key, val] of Object.entries(data.toolSettings)) {
         if (val && typeof val === "object") {
           savedToolSettings[key] = {
-            enabled: val.enabled !== false,
+            enabled:
+              key === "runtime" && toolSettingsVersion < TOOL_SETTINGS_VERSION
+                ? false
+                : val.enabled !== false,
             collapsed: !!val.collapsed,
           };
         }
@@ -86,12 +92,14 @@ const DEFAULT_FILES = [
   { name: "pyproject.toml", content: "" },
 ];
 
-const DEFAULT_TOOL_ORDER = ["ty", "pyright", "pyrefly", "mypy", "zuban", "pycroscope"];
+const RUNTIME_TOOL = "runtime";
+const DEFAULT_TOOL_ORDER = [RUNTIME_TOOL, "ty", "pyright", "pyrefly", "mypy", "zuban", "pycroscope"];
 let toolOrder = DEFAULT_TOOL_ORDER.slice();
 const RUFF_TY_TOOL = "ty_ruff";
 const PYTHON_LOCAL_TOOLS = ["mypy", "pycroscope"];
 
 function toolConfigSection(tool) {
+  if (tool === RUNTIME_TOOL) return "";
   const name = tool === RUFF_TY_TOOL ? "ty" : tool;
   return `[tool.${name}]`;
 }
@@ -512,10 +520,12 @@ async function handleLoadGist() {
 
     state.files = normalizedFiles;
     state.activeIndex = 0;
+    closeCodeExecutionPanels();
 
     saveState();
     renderTabs();
     syncEditorFromState();
+    renderResults(state.lastResults);
     scheduleAnalyze();
     setStatus("Loaded " + normalizedFiles.length + " file(s) from gist " + gistId);
   } catch (err) {
@@ -1639,7 +1649,7 @@ function setPythonVersionOptions(rawOptions) {
     option.value = version;
     option.textContent = version || "not specified";
     if (version === "") {
-      option.title = "Don't pass --python-version to type checkers; let each tool detect the version automatically";
+      option.title = "Let uv and each type checker choose the Python version automatically";
     }
     pythonVersionEl.appendChild(option);
   });
@@ -1795,14 +1805,21 @@ function syncRuffToolPresence() {
   }
 }
 
+function ensureRuntimeToolPresence() {
+  if (!toolOrder.includes(RUNTIME_TOOL)) {
+    toolOrder.unshift(RUNTIME_TOOL);
+  }
+}
+
 function ensureToolSettings() {
   syncRuffToolPresence();
+  ensureRuntimeToolPresence();
   const next = {};
   toolOrder.forEach((tool) => {
     const existing = state.toolSettings[tool];
     next[tool] = {
-      enabled: !existing || existing.enabled !== false,
-      collapsed: !!(existing && existing.collapsed),
+      enabled: existing ? existing.enabled !== false : tool !== RUNTIME_TOOL,
+      collapsed: existing ? !!existing.collapsed : tool === RUNTIME_TOOL,
     };
   });
   state.toolSettings = next;
@@ -1813,6 +1830,29 @@ function enabledTools() {
     const settings = state.toolSettings[tool];
     return !settings || settings.enabled !== false;
   });
+}
+
+function closeCodeExecutionPanels() {
+  ensureToolSettings();
+
+  state.toolSettings[RUNTIME_TOOL].enabled = false;
+  state.toolSettings[RUNTIME_TOOL].collapsed = true;
+  delete state.lastResults[RUNTIME_TOOL];
+
+  const pycroscopeSettings = state.toolSettings.pycroscope;
+  if (pycroscopeSettings) {
+    pycroscopeSettings.enabled = false;
+    pycroscopeSettings.collapsed = true;
+  }
+  delete state.lastResults.pycroscope;
+}
+
+function toggleToolCollapsed(tool) {
+  const current = state.toolSettings[tool];
+  if (!current) return;
+  current.collapsed = !current.collapsed;
+  saveState();
+  renderResults(state.lastResults);
 }
 
 
@@ -1944,7 +1984,7 @@ function isUniqueName(name, ignoreIndex) {
   return !state.files.some((f, idx) => idx !== ignoreIndex && f.name === name);
 }
 
-function scheduleAnalyze({ onlyTools } = {}) {
+function scheduleAnalyze({ onlyTools, immediate = false } = {}) {
   saveState();
   if (state.debounceTimer) {
     clearTimeout(state.debounceTimer);
@@ -1956,6 +1996,13 @@ function scheduleAnalyze({ onlyTools } = {}) {
     }
   }
   state.pendingOnlyTools = onlyTools;
+  if (immediate) {
+    const pending = state.pendingOnlyTools;
+    state.pendingOnlyTools = undefined;
+    state.debounceTimer = null;
+    analyze({ onlyTools: pending });
+    return;
+  }
   state.debounceTimer = setTimeout(() => {
     const pending = state.pendingOnlyTools;
     state.pendingOnlyTools = undefined;
@@ -2160,11 +2207,7 @@ function renderResults(resultByTool) {
         event.target !== grip &&
         !event.target.classList.contains("result-header");
       if (overText) return;
-      const current = state.toolSettings[tool];
-      if (!current) return;
-      current.collapsed = !current.collapsed;
-      saveState();
-      renderResults(state.lastResults);
+      toggleToolCollapsed(tool);
     });
 
     header.addEventListener("dragstart", (event) => {
@@ -2246,13 +2289,7 @@ function renderResults(resultByTool) {
     collapseBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const current = state.toolSettings[tool];
-      if (!current) {
-        return;
-      }
-      current.collapsed = !current.collapsed;
-      saveState();
-      renderResults(state.lastResults);
+      toggleToolCollapsed(tool);
     });
 
     const configSection = toolConfigSection(tool);
@@ -2357,12 +2394,16 @@ function handleMetadataMessage(msg) {
   if (Array.isArray(msg.tool_order) && msg.tool_order.length > 0) {
     const serverOrder = normalizeToolList(msg.tool_order);
     const serverSet = new Set(serverOrder);
+    serverSet.add(RUNTIME_TOOL);
     const merged = toolOrder.filter((t) => serverSet.has(t));
     const mergedSet = new Set(merged);
     for (const t of serverOrder) {
       if (!mergedSet.has(t)) {
         merged.push(t);
       }
+    }
+    if (!mergedSet.has(RUNTIME_TOOL)) {
+      merged.unshift(RUNTIME_TOOL);
     }
     toolOrder = merged;
   }
@@ -2390,6 +2431,7 @@ function handleMetadataMessage(msg) {
   if (!state.currentOnlyTools && Array.isArray(msg.enabled_tools)) {
     const enabledSet = new Set(normalizeToolList(msg.enabled_tools));
     toolOrder.forEach((tool) => {
+      if (tool === RUNTIME_TOOL) return;
       const settings = state.toolSettings[tool];
       if (settings) {
         settings.enabled = enabledSet.has(tool);
@@ -2572,7 +2614,8 @@ async function analyze({ onlyTools } = {}) {
   state.currentController = controller;
   state.currentOnlyTools = onlyTools || null;
 
-  const toolsToSend = onlyTools || enabledTools();
+  const requestedTools = onlyTools || enabledTools();
+  const toolsToSend = requestedTools.filter((tool) => tool !== RUNTIME_TOOL);
   const payload = {
     files: state.files.map((f) => ({ name: f.name, content: f.content })),
     python_version: state.pythonVersion,
@@ -2582,6 +2625,7 @@ async function analyze({ onlyTools } = {}) {
     typeshed_path: state.typeshedPath,
     python_tool_repo_paths: pythonToolRepoPathsPayload(),
     dependency_cooldown_exempt_packages: state.dependencyCooldownExemptPackages,
+    runtime_enabled: requestedTools.includes(RUNTIME_TOOL),
     enabled_tools: toolsToSend,
     analysis_client_id: ANALYSIS_CLIENT_ID,
     analysis_request_id: requestId,
@@ -2716,6 +2760,7 @@ function buildPyprojectContent() {
   const withoutDefaults = [];
   for (const name of toolOrder) {
     const header = toolConfigSection(name);
+    if (!header) continue;
     if (!seen.has(header)) {
       seen.add(header);
       const defaults = toolDefaultConfig(name);
@@ -3145,6 +3190,7 @@ function loadFromBootstrap(body) {
   if (Array.isArray(body.enabled_tools)) {
     const enabledSet = new Set(normalizeToolList(body.enabled_tools));
     toolOrder.forEach((tool) => {
+      if (tool === RUNTIME_TOOL) return;
       const settings = state.toolSettings[tool];
       if (settings) {
         settings.enabled = enabledSet.has(tool);
@@ -3297,12 +3343,17 @@ async function bootstrap() {
     pycroscopeRepoPathEl.value = pythonToolRepoPathForTool("pycroscope");
     state.dependencyCooldownExemptPackages = normalizeDependencyCooldownExemptPackages(saved.dependencyCooldownExemptPackages);
     syncDependencyCooldownExemptPackagesInput();
+    ensureToolSettings();
     if (saved.toolOrder) {
       // Merge saved order with current toolOrder: keep saved order for tools
       // that still exist, append any new tools from the server.
       const currentSet = new Set(toolOrder);
       const merged = saved.toolOrder.filter((t) => currentSet.has(t));
       const mergedSet = new Set(merged);
+      if (!mergedSet.has(RUNTIME_TOOL)) {
+        merged.unshift(RUNTIME_TOOL);
+        mergedSet.add(RUNTIME_TOOL);
+      }
       for (const t of toolOrder) {
         if (!mergedSet.has(t)) {
           merged.push(t);

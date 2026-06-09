@@ -17,6 +17,14 @@ Local Python web server with a tabbed multi-file editor. Any file change trigger
    - `python -m pycroscope --output-format concise .`
 5. Display output from each tool in the UI
 
+The runtime pane is always present and is turned off and collapsed by default. Like
+the type-checker panes, its `On`/`Off` toggle controls whether it runs independently
+of whether its output is collapsed. When enabled, it runs `main.py` (or the first
+Python file when there is no `main.py`) with the selected Python version and the
+project's installed dependencies. The runtime interpreter installs
+`typing.reveal_type` as the built-in `reveal_type` when available, and provides the
+same built-in behavior without modifying `typing` on Python 3.10.
+
 ## Run
 
 ```bash
@@ -42,8 +50,8 @@ Then open [http://localhost:8000](http://localhost:8000).
 
 ## Notes
 
-Pycroscope imports the code, so don't enter any code in the playground that you
-don't want imported on your system.
+Pycroscope imports the code, and enabling the runtime pane executes it. Don't enter
+code in the playground that you don't want run on your system.
 
 Each type checker run has a 10-second timeout during analyze; if exceeded,
 that tool returns a timeout error while others still complete.
@@ -79,7 +87,9 @@ current files and dependencies. The gist ID is copied to your clipboard.
 
 To load a shared gist, paste the gist ID (or full URL) into the **Gist ID or URL** input
 in the header and click **Load**. This replaces the current files and dependencies with
-the contents of the gist.
+the contents of the gist. Before analyzing the loaded files, multiplay turns off and
+collapses both the runtime and pycroscope panes; re-enable them only after reviewing the
+gist contents.
 
 Sharing uses the GitHub Gist API directly. It uses `MULTIPLAY_GH_TOKEN` if set
 (for example: `export MULTIPLAY_GH_TOKEN=...`), otherwise it falls back to
