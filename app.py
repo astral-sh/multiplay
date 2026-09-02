@@ -1519,10 +1519,12 @@ class AppHandler(BaseHTTPRequestHandler):
                         self.close_connection = True
                         return
 
+                    # Every checker needs dependencies installed for the selected
+                    # Python version, including version-dependent transitive ones.
                     sync_result = _run_uv_sync(
                         analysis_dir,
                         dependency_cooldown_exempt_packages=dependency_cooldown_exempt_packages,
-                        python_version=python_version if runtime_enabled else None,
+                        python_version=python_version,
                         cancel_event=cancel_event,
                     )
                     if cancel_event.is_set():

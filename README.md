@@ -98,11 +98,15 @@ Loading public gists only requires network access.
 
 ## Dependencies
 
-The header has a dependency field (comma/newline separated). When non-empty,
-dependencies are added to `pyproject.toml` and installed into that analysis's
-venv with `uv sync` before the type checker tools run. All tools in one analysis
-use the same snapshot venv, so they can resolve imports from installed packages
-directly.
+Dependencies listed in `pyproject.toml` are installed into the analysis's venv
+with `uv sync` before the type checker tools run. All tools in one analysis use
+the same snapshot venv, so they can resolve imports from installed packages
+directly. The venv uses the selected Python version, so
+Python-version-dependent transitive dependencies match the checkers' target
+version. Leaving the Python version unspecified in the UI lets uv choose the
+venv interpreter version, and does not explicitly set the Python version for
+type checkers, leaving them to use their own configuration, heuristics, or
+defaults.
 
 If dependency install fails, the UI shows a dedicated error panel with command,
 exit code, requested dependencies, and full installer output.
@@ -115,8 +119,9 @@ skip the cooldown; it defaults to `ty`.
 ## Configuration
 
 Because we are simply running the type checker CLIs, you can add `ty.toml`,
-`mypy.ini`, `pyrightconfig.json` etc files and they "just work".
-Output panes preserve ANSI terminal color codes when the tool emits them.
+`mypy.ini`, `pyrightconfig.json` etc files and they "just work", or you can add
+type checker configurations to `pyproject.toml`. Output panes preserve ANSI
+terminal color codes when the tool emits them.
 
 ## Project layout
 

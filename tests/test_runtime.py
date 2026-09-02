@@ -62,7 +62,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(command[-2:], ["--python", "3.12"])
 
-    def test_uv_sync_omits_python_version_when_runtime_is_disabled(self) -> None:
+    def test_uv_sync_omits_unspecified_python_version(self) -> None:
         command = app._uv_sync_command()
 
         self.assertNotIn("--python", command)
