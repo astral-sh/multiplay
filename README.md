@@ -39,6 +39,26 @@ Or, to start the server and automatically open it in your default browser:
 ./run.sh
 ```
 
+### Command line
+
+Run all multiplay type checkers without starting the web UI:
+
+```bash
+uv run multiplay check path/to/file_or_project
+uv run multiplay check --code "x: int = 'bad'"
+```
+
+The command copies the input into a disposable analysis directory, writes the
+default `pyproject.toml` when one is not present, runs `uv sync`, and prints a
+section for each checker. It exits non-zero if dependency installation fails or
+any checker exits non-zero.
+
+The same mode is also available as:
+
+```bash
+uv run multiplay-check --code "x: int = 'bad'"
+```
+
 ### Docker
 
 ```bash

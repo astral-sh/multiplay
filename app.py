@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1226,6 +1227,192 @@ def _prime_tool_installs() -> dict[str, dict[str, Any]]:
     return _detect_tool_versions(STAGING_DIR)
 
 
+CLI_SKIP_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".pyrefly",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+}
+
+
+def _copy_cli_path(source: Path, analysis_dir: Path) -> None:
+    if source.name in CLI_SKIP_DIR_NAMES:
+        return
+    destination = analysis_dir / source.name
+    if destination.exists():
+        raise ValueError(f"Multiple inputs would overwrite {destination.relative_to(analysis_dir)}")
+
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True, ignore=_ignore_cli_copy_names)
+    elif source.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination, follow_symlinks=False)
+    else:
+        raise ValueError(f"Input path is not a file or directory: {source}")
+
+
+def _copy_cli_directory_contents(source: Path, analysis_dir: Path) -> None:
+    for child in source.iterdir():
+        _copy_cli_path(child, analysis_dir)
+
+
+def _ignore_cli_copy_names(_directory: str, names: list[str]) -> set[str]:
+    return {name for name in names if name in CLI_SKIP_DIR_NAMES}
+
+
+def _prepare_cli_analysis_dir(
+    analysis_dir: Path,
+    *,
+    code: str | None,
+    input_paths: list[Path],
+) -> list[str]:
+    if code is not None:
+        if input_paths:
+            raise ValueError("--code cannot be combined with file or directory inputs")
+        (analysis_dir / "main.py").write_text(code, encoding="utf-8")
+    elif not input_paths:
+        raise ValueError("Provide --code or at least one file or directory")
+    elif len(input_paths) == 1 and input_paths[0].is_dir():
+        _copy_cli_directory_contents(input_paths[0], analysis_dir)
+    else:
+        for source in input_paths:
+            _copy_cli_path(source, analysis_dir)
+
+    pyproject_path = analysis_dir / "pyproject.toml"
+    if not pyproject_path.exists():
+        pyproject_path.write_text(DEFAULT_PYPROJECT_TOML, encoding="utf-8")
+
+    return _cli_python_files(analysis_dir)
+
+
+def _cli_python_files(analysis_dir: Path) -> list[str]:
+    paths: list[str] = []
+    for path in sorted(analysis_dir.rglob("*")):
+        if not path.is_file() or path.suffix not in {".py", ".pyi"}:
+            continue
+        try:
+            relative_parts = path.relative_to(analysis_dir).parts
+        except ValueError:
+            continue
+        if any(part in CLI_SKIP_DIR_NAMES for part in relative_parts):
+            continue
+        paths.append(path.relative_to(analysis_dir).as_posix())
+    return paths
+
+
+def _print_cli_result(tool_name: str, result: dict[str, Any]) -> None:
+    print(f"== {tool_name} ==")
+    command = result.get("command")
+    if isinstance(command, str) and command:
+        print(f"$ {command}")
+
+    output = result.get("output")
+    if isinstance(output, str) and output.strip():
+        print(output.rstrip())
+    else:
+        print("(no output)")
+
+    returncode = result.get("returncode")
+    duration_ms = result.get("duration_ms")
+    if isinstance(returncode, int) and isinstance(duration_ms, int):
+        print(f"(exit {returncode}, {duration_ms}ms)")
+    elif isinstance(returncode, int):
+        print(f"(exit {returncode})")
+    print()
+
+
+def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="multiplay check",
+        description="Run all multiplay type checkers on Python code.",
+    )
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "-c",
+        "--code",
+        help="Python program text to write to main.py and type-check.",
+    )
+    input_group.add_argument(
+        "paths",
+        metavar="PATH",
+        nargs="*",
+        help="Python file(s), stub file(s), or a project directory to type-check.",
+    )
+    parser.add_argument(
+        "--python-version",
+        default=DEFAULT_PYTHON_VERSION,
+        choices=[*SUPPORTED_PYTHON_VERSIONS, ""],
+        help=f"Python version to pass to checkers (default: {DEFAULT_PYTHON_VERSION}; use '' for tool defaults).",
+    )
+    parser.add_argument(
+        "--timeout",
+        default=ANALYZE_TOOL_TIMEOUT_SECONDS,
+        type=int,
+        help=f"Per-checker timeout in seconds (default: {ANALYZE_TOOL_TIMEOUT_SECONDS}).",
+    )
+    return parser.parse_args(argv)
+
+
+def run_cli(args: argparse.Namespace) -> int:
+    input_paths: list[Path] = []
+    for raw_path in args.paths or []:
+        path = Path(raw_path).expanduser()
+        try:
+            input_paths.append(path.resolve(strict=True))
+        except FileNotFoundError as exc:
+            raise ValueError(f"Input path does not exist: {raw_path!r}") from exc
+        except OSError as exc:
+            raise ValueError(f"Could not resolve input path {raw_path!r}: {exc}") from exc
+
+    with tempfile.TemporaryDirectory(prefix="multiplay-cli-") as tmp:
+        analysis_dir = Path(tmp)
+        file_paths = _prepare_cli_analysis_dir(analysis_dir, code=args.code, input_paths=input_paths)
+
+        sync_result = _run_uv_sync(analysis_dir)
+        if sync_result["returncode"] != 0:
+            print("== uv sync ==")
+            print(f"$ {sync_result['command']}")
+            output = sync_result.get("output")
+            print(output.rstrip() if isinstance(output, str) and output.strip() else "(no output)")
+            return 1
+
+        results: dict[str, dict[str, Any]] = {}
+        python_version = args.python_version or None
+        for tool_name, result in _iter_all_tools(
+            analysis_dir,
+            enabled_tools=list(TOOL_ORDER),
+            timeout_seconds=args.timeout,
+            file_paths=file_paths,
+            python_version=python_version,
+        ):
+            results[tool_name] = result
+
+    failed = False
+    for tool_name in TOOL_ORDER:
+        result = results.get(tool_name)
+        if result is None:
+            continue
+        _print_cli_result(tool_name, result)
+        returncode = result.get("returncode")
+        if isinstance(returncode, int) and returncode != 0:
+            failed = True
+    return 1 if failed else 0
+
+
+def cli_main(argv: list[str] | None = None) -> int:
+    try:
+        return run_cli(parse_cli_args(argv))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
 def _resolve_static_file(url_path: str) -> Path | None:
     if url_path == "/":
         candidate = STATIC_DIR / "index.html"
@@ -1721,7 +1908,7 @@ class AppHandler(BaseHTTPRequestHandler):
         return data
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web app with multi-file editor and typecheckers")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", default=8000, type=int, help="Port to bind (default: 8000)")
@@ -1735,14 +1922,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open the app in the default browser after starting",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
+def run_server(args: argparse.Namespace) -> int:
     if not STATIC_DIR.is_dir():
         raise SystemExit(f"Static directory not found: {STATIC_DIR}")
-
-    args = parse_args()
 
     if not args.skip_prime:
         print("Priming tool installs...")
@@ -1778,7 +1963,16 @@ def main() -> None:
         # On Windows, temp directories aren't automatically cleaned up.
         if os.name == "nt":
             shutil.rmtree(STAGING_DIR, ignore_errors=True)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "check":
+        return cli_main(argv[1:])
+    return run_server(parse_args(argv))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

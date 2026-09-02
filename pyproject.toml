@@ -8,6 +8,7 @@ dependencies = []
 
 [project.scripts]
 multiplay = "app:main"
+multiplay-check = "app:cli_main"
 
 [build-system]
 requires = ["hatchling"]
