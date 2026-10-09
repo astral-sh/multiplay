@@ -24,6 +24,7 @@ class PythonVersionTests(unittest.TestCase):
                 version=version, enabled_tools=enabled_tools, runtime=runtime,
             ), tempfile.TemporaryDirectory() as tmp:
                 handler = Mock(spec=app.AppHandler)
+                handler.server = Mock(spec=app.AppServer)
                 handler.path = "/api/analyze"
                 handler._read_json_body.return_value = {
                     "files": [

@@ -54,6 +54,17 @@ Explicit startup values override the corresponding saved browser state once per
 server launch. Other files and settings are preserved, and `--code` selects the
 `main.py` tab (creating it if needed). Subsequent page reloads preserve your edits.
 
+To stop the server automatically after 5 minutes without an analysis request:
+
+```bash
+uv run multiplay --shutdown-if-idle 300
+```
+
+The timeout must be a positive number of seconds and is disabled by default.
+It starts when the server begins serving, after tool priming, and resets on each
+`/api/analyze` request. Health checks and other requests do not reset it. Any
+in-flight analyses finish before the server shuts down.
+
 ### Docker
 
 ```bash

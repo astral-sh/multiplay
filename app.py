@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import os
 import re
@@ -1392,7 +1393,57 @@ def _create_gist(files: list[dict[str, Any]]) -> dict[str, str]:
     return {"gist_url": gist_url, "gist_id": gist_id}
 
 
+class AppServer(ThreadingHTTPServer):
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class: type[BaseHTTPRequestHandler],
+        *,
+        shutdown_if_idle: float | None = None,
+    ) -> None:
+        super().__init__(server_address, handler_class)
+        self.shutdown_if_idle = shutdown_if_idle
+        self._idle_lock = threading.Lock()
+        self._last_analysis_at = time.monotonic()
+        self._active_analyses = 0
+        self._shutdown_started = False
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self._last_analysis_at = time.monotonic()
+        if self.shutdown_if_idle is not None:
+            poll_interval = min(poll_interval, self.shutdown_if_idle)
+        super().serve_forever(poll_interval=poll_interval)
+
+    def analysis_started(self) -> bool:
+        with self._idle_lock:
+            if self._shutdown_started:
+                return False
+            self._last_analysis_at = time.monotonic()
+            self._active_analyses += 1
+            return True
+
+    def analysis_finished(self) -> None:
+        with self._idle_lock:
+            self._active_analyses -= 1
+
+    def service_actions(self) -> None:
+        if self.shutdown_if_idle is None:
+            return
+        with self._idle_lock:
+            if (
+                self._shutdown_started
+                or self._active_analyses
+                or time.monotonic() - self._last_analysis_at < self.shutdown_if_idle
+            ):
+                return
+            self._shutdown_started = True
+        print(f"\nShutting down after {self.shutdown_if_idle:g} seconds without an analysis request...")
+        # shutdown() waits for serve_forever(), so it must run in another thread.
+        threading.Thread(target=self.shutdown, daemon=True).start()
+
+
 class AppHandler(BaseHTTPRequestHandler):
+    server: AppServer
     server_version = "MultifileEditor/2.0"
     protocol_version = "HTTP/1.1"
     startup_overrides: dict[str, str] = {}
@@ -1484,6 +1535,11 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path != "/api/analyze":
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+
+        if not self.server.analysis_started():
+            self.close_connection = True
+            _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Server is shutting down"})
             return
 
         try:
@@ -1618,6 +1674,8 @@ class AppHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON payload"})
         except Exception as exc:  # pragma: no cover
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Unexpected error: {exc}"})
+        finally:
+            self.server.analysis_finished()
 
     def _handle_share(self) -> None:
         try:
@@ -1731,6 +1789,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ruff-repo-path", metavar="PATH", help="Local Ruff checkout to use at startup")
     parser.add_argument("--code", metavar="TEXT", help="Initial code for main.py")
     parser.add_argument(
+        "--shutdown-if-idle",
+        type=float,
+        metavar="SECONDS",
+        help="Shut down after this many seconds without an analysis request (default: disabled)",
+    )
+    parser.add_argument(
         "--skip-prime",
         action="store_true",
         help="Skip startup tool install priming (default: prime enabled)",
@@ -1741,6 +1805,10 @@ def parse_args() -> argparse.Namespace:
         help="Open the app in the default browser after starting",
     )
     args = parser.parse_args()
+    if args.shutdown_if_idle is not None and (
+        not math.isfinite(args.shutdown_if_idle) or args.shutdown_if_idle <= 0
+    ):
+        parser.error("--shutdown-if-idle must be a positive, finite number of seconds")
     if args.ruff_repo_path is not None:
         try:
             ruff_repo_path = _normalize_ruff_repo_path(args.ruff_repo_path)
@@ -1775,7 +1843,7 @@ def main() -> None:
     port = args.port
     while True:
         try:
-            server = ThreadingHTTPServer((args.host, port), AppHandler)
+            server = AppServer((args.host, port), AppHandler, shutdown_if_idle=args.shutdown_if_idle)
             break
         except OSError:
             port += 1
@@ -1792,6 +1860,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
+        server.server_close()
         # On Windows, temp directories aren't automatically cleaned up.
         if os.name == "nt":
             shutil.rmtree(STAGING_DIR, ignore_errors=True)
