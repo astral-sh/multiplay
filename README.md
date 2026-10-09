@@ -39,6 +39,21 @@ Or, to start the server and automatically open it in your default browser:
 ./run.sh
 ```
 
+To configure a local Ruff checkout and start with code in `main.py`:
+
+```bash
+uv run multiplay --ruff-repo-path /path/to/ruff --code 'reveal_type(42)'
+```
+
+Both flags are optional and also work with `./run.sh`. `--ruff-repo-path` enables
+the local `ty` checker and accepts relative paths or `~`. `--code` accepts literal
+Python source, including an empty string to clear `main.py`. For multiline code
+from a file, use `--code "$(cat example.py)"`.
+
+Explicit startup values override the corresponding saved browser state once per
+server launch. Other files and settings are preserved, and `--code` selects the
+`main.py` tab (creating it if needed). Subsequent page reloads preserve your edits.
+
 ### Docker
 
 ```bash

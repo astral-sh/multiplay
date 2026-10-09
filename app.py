@@ -1395,6 +1395,7 @@ def _create_gist(files: list[dict[str, Any]]) -> dict[str, str]:
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "MultifileEditor/2.0"
     protocol_version = "HTTP/1.1"
+    startup_overrides: dict[str, str] = {}
 
     def handle_one_request(self) -> None:
         try:
@@ -1429,6 +1430,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     "initial_dependency_cooldown_exempt_packages": list(DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES),
                     "tool_versions": dict(TOOL_VERSIONS),
                     "staging_dir": str(STAGING_DIR),
+                    "startup_overrides": self.startup_overrides,
+                    "server_id": SERVER_ID,
                 },
             )
             return
@@ -1725,6 +1728,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web app with multi-file editor and typecheckers")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", default=8000, type=int, help="Port to bind (default: 8000)")
+    parser.add_argument("--ruff-repo-path", metavar="PATH", help="Local Ruff checkout to use at startup")
+    parser.add_argument("--code", metavar="TEXT", help="Initial code for main.py")
     parser.add_argument(
         "--skip-prime",
         action="store_true",
@@ -1735,7 +1740,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open the app in the default browser after starting",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.ruff_repo_path is not None:
+        try:
+            ruff_repo_path = _normalize_ruff_repo_path(args.ruff_repo_path)
+        except ValueError as exc:
+            parser.error(f"--ruff-repo-path: {exc}")
+        args.ruff_repo_path = str(ruff_repo_path) if ruff_repo_path is not None else ""
+    return args
 
 
 def main() -> None:
@@ -1743,6 +1755,11 @@ def main() -> None:
         raise SystemExit(f"Static directory not found: {STATIC_DIR}")
 
     args = parse_args()
+    AppHandler.startup_overrides = {}
+    if args.ruff_repo_path is not None:
+        AppHandler.startup_overrides["ruff_repo_path"] = args.ruff_repo_path
+    if args.code is not None:
+        AppHandler.startup_overrides["code"] = args.code
 
     if not args.skip_prime:
         print("Priming tool installs...")

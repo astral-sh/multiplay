@@ -10,6 +10,7 @@ function saveState() {
       STORAGE_KEY,
       JSON.stringify({
         files: state.files.map((f) => ({ name: f.name, content: f.content })),
+        startupServerId: state.startupServerId,
         pythonVersion: state.pythonVersion,
         activeIndex: state.activeIndex,
         ruffRepoPath: state.ruffRepoPath,
@@ -61,6 +62,7 @@ function loadSavedState() {
     }
     return {
       files,
+      startupServerId: typeof data.startupServerId === "string" ? data.startupServerId : null,
       pythonVersion: typeof data.pythonVersion === "string" ? data.pythonVersion : DEFAULT_PYTHON_VERSION,
       activeIndex: typeof data.activeIndex === "number" ? data.activeIndex : 0,
       ruffRepoPath: typeof data.ruffRepoPath === "string" ? data.ruffRepoPath : "",
@@ -158,6 +160,7 @@ function nextAnalysisRequestId() {
 
 const state = {
   files: [],
+  startupServerId: null,
   pythonVersion: DEFAULT_PYTHON_VERSION,
   pythonVersionOptions: DEFAULT_PYTHON_VERSION_OPTIONS.slice(),
   ruffRepoPath: "",
@@ -3224,7 +3227,38 @@ async function fetchBootstrap() {
   return body;
 }
 
-function showRestoredOptionsToast() {
+function applyStartupOverrides(body, saved) {
+  state.startupServerId = saved?.startupServerId ?? null;
+  if (!body?.server_id || body.server_id === state.startupServerId) return;
+
+  // Apply explicit CLI values after restoring browser state, once per launch,
+  // so refreshing the page preserves subsequent edits.
+  const overrides = body.startup_overrides ?? {};
+  if (typeof overrides.ruff_repo_path === "string") {
+    state.ruffRepoPath = normalizeRuffRepoPath(overrides.ruff_repo_path);
+    ruffRepoPathEl.value = state.ruffRepoPath;
+    ensureToolSettings();
+    if (state.ruffRepoPath) {
+      state.toolSettings[RUFF_TY_TOOL].enabled = true;
+    }
+  }
+  if (typeof overrides.code === "string") {
+    let mainIndex = state.files.findIndex((file) =>
+      normalizeName(file.name).split("/").filter((part) => part && part !== ".").join("/") === "main.py"
+    );
+    if (mainIndex === -1) {
+      mainIndex = state.files.length;
+      state.files.push({ name: "main.py", content: overrides.code });
+    } else {
+      state.files[mainIndex].content = overrides.code;
+    }
+    state.activeIndex = mainIndex;
+  }
+  state.startupServerId = body.server_id;
+  saveState();
+}
+
+function showCustomOptionsToast() {
   const restored = [];
   // Check if pyproject.toml has non-empty dependencies
   const pyproj = state.files.find((f) => f.name === "pyproject.toml");
@@ -3265,7 +3299,7 @@ function showRestoredOptionsToast() {
 
   const heading = document.createElement("div");
   heading.className = "restored-toast-heading";
-  heading.textContent = "Settings restored from previous session";
+  heading.textContent = "Active custom settings";
   toast.appendChild(heading);
 
   const list = document.createElement("ul");
@@ -3295,8 +3329,10 @@ async function bootstrap() {
   setStatus("Loading...");
   renderResults({});
 
+  let body = null;
   try {
-    loadFromBootstrap(await fetchBootstrap());
+    body = await fetchBootstrap();
+    loadFromBootstrap(body);
   } catch (err) {
     state.files = DEFAULT_FILES.slice();
     state.pythonVersion = DEFAULT_PYTHON_VERSION;
@@ -3372,7 +3408,8 @@ async function bootstrap() {
     ensureToolSettings();
   }
 
-  showRestoredOptionsToast();
+  applyStartupOverrides(body, saved);
+  showCustomOptionsToast();
   bindEvents();
   renderTabs();
   syncEditorFromState();
