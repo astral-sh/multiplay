@@ -76,7 +76,7 @@ DEFAULT_FILES = [
     {"name": "pyproject.toml", "content": DEFAULT_PYPROJECT_TOML},
 ]
 SUPPORTED_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
-DEFAULT_PYTHON_VERSION = "3.14"
+DEFAULT_PYTHON_VERSION = "3.15"
 
 
 @dataclass(frozen=True)
@@ -1223,7 +1223,7 @@ def _prime_tool_installs() -> dict[str, dict[str, Any]]:
     pyproject_path = STAGING_DIR / "pyproject.toml"
     if not pyproject_path.exists():
         pyproject_path.write_text(DEFAULT_PYPROJECT_TOML, encoding="utf-8")
-    _run_uv_sync(STAGING_DIR)
+    _run_uv_sync(STAGING_DIR, python_version=DEFAULT_PYTHON_VERSION)
     return _detect_tool_versions(STAGING_DIR)
 
 
