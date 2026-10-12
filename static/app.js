@@ -1,7 +1,7 @@
 const STORAGE_KEY = "multiplay_state";
 const TOOL_SETTINGS_VERSION = 1;
 const DEFAULT_PYTHON_VERSION_OPTIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15", ""];
-const DEFAULT_PYTHON_VERSION = "3.14";
+const DEFAULT_PYTHON_VERSION = "3.15";
 const DEFAULT_DEPENDENCY_COOLDOWN_EXEMPT_PACKAGES = ["ty"];
 
 function saveState() {
